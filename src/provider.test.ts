@@ -19,6 +19,7 @@ import {
 	probeCapability,
 	probeCapabilityAsync,
 	probeProvider,
+	probeProviderAsync,
 	runCommand,
 	runProvider,
 	sanitizeProbes,
@@ -939,6 +940,38 @@ exit 0`,
 	it("stamps the probe with the injected clock", () => {
 		sandbox({ gemini: `printf '%s' '{"response":"{}"}'` }, () => {
 			assert.equal(probeCapability("gemini", { timeoutMs: 5_000, now: () => 1234 }).checkedAt, 1234);
+		});
+	});
+});
+
+describe("probeProviderAsync", () => {
+	it("reports the version a working CLI prints", async () => {
+		await sandboxAsync({ gemini: "echo 0.42.0" }, async () => {
+			const result = await probeProviderAsync("gemini", 5_000);
+			assert.deepEqual(result, { available: true, detail: "0.42.0" });
+		});
+	});
+
+	it("does not wait forever on a CLI that hangs", async () => {
+		// The settings tab used to run this synchronously three times while rendering. A stub
+		// that never answers froze the whole tab for the full 30 seconds; now it costs the 10
+		// second limit per provider and no main-thread block.
+		await sandboxAsync({ gemini: "sleep 30" }, async () => {
+			const started = Date.now();
+			const result = await probeProviderAsync("gemini", 1_000);
+			assert.equal(result.available, false);
+			assert.match(result.detail, /did not answer within 1s/);
+			assert.ok(Date.now() - started < 5_000, "the timeout did not bound the wait");
+		});
+	});
+
+	it("reports a missing binary without waiting for the timeout", async () => {
+		await sandboxAsync({}, async () => {
+			const started = Date.now();
+			const result = await probeProviderAsync("gemini", 5_000);
+			assert.equal(result.available, false);
+			assert.match(result.detail, /not found on PATH/);
+			assert.ok(Date.now() - started < 2_000);
 		});
 	});
 });

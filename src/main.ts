@@ -24,7 +24,7 @@ import {
 	detectProvidersAsync,
 	isProviderId,
 	probeCapabilityAsync,
-	probeProvider,
+	probeProviderAsync,
 	PROVIDER_IDS,
 	runProvider,
 	sanitizeProbes,
@@ -1136,7 +1136,15 @@ class GitdeckSettingTab extends PluginSettingTab {
 			detail.setText(detailFor(id, probe));
 
 			const version = row.createSpan({ cls: "gd-probe-version" });
-			version.setText(`installed: ${probeProvider(id).detail}`);
+			// Never a blocking spawn here: a CLI that ignores `--version` used to freeze the
+			// whole settings tab three times over before the first row painted.
+			version.setText("Installed: checking…");
+			void probeProviderAsync(id).then((result) => {
+				// The tab can be cleared or closed while the child is still running.
+				if (!version.isConnected) return;
+				version.setText(`installed: ${result.detail}`);
+				if (!result.available) version.toggleClass("is-bad", true);
+			});
 		}
 
 		const logNote = containerEl.createDiv({ cls: "gd-probe" });
@@ -1206,6 +1214,10 @@ class GitdeckSettingTab extends PluginSettingTab {
 			detectionNeedsProbe(this.plugin.settings.provider, this.plugin.settings.detection)
 		) {
 			this.probingOnOpen = true;
+			// Say what is happening while the three CLIs are being tested. The calls are
+			// asynchronous, so the tab stays usable, but a stale "nothing has been tested"
+			// line reads like the button did nothing.
+			detectionNote.setText("Testing the providers now…");
 			void (async () => {
 				try {
 					await this.plugin.retestProviders(false);

@@ -583,6 +583,20 @@ function parseSummaryFromFailure(
 	return null;
 }
 
+/** What a `--version` check found. Separate from `ProviderProbe`: this is not a verdict on use. */
+export interface VersionProbe {
+	available: boolean;
+	detail: string;
+}
+
+/**
+ * Wall-clock limit for one `--version` check.
+ *
+ * The settings tab used to call the blocking form three times while it rendered, so a CLI that
+ * hung could freeze the tab for 30 seconds. The limit is unchanged; only the spawn is.
+ */
+const VERSION_TIMEOUT_MS = 10_000;
+
 /**
  * Whether a provider's binary is on PATH, plus its reported version.
  *
@@ -592,21 +606,51 @@ function parseSummaryFromFailure(
  * This answers "is it installed", and nothing more. gemini 0.42.0 is installed here and
  * passes while being completely unusable, so it is never used to decide which CLI to
  * generate with. That is `probeCapability`.
+ *
+ * Synchronous for tests; the settings tab uses `probeProviderAsync`.
  */
-export function probeProvider(provider: ProviderId): { available: boolean; detail: string } {
+export function probeProvider(provider: ProviderId, timeoutMs = VERSION_TIMEOUT_MS): VersionProbe {
 	const command = COMMANDS[provider];
-	const res = spawnSync(command, ["--version"], { encoding: "utf8", windowsHide: true, timeout: 10_000 });
-	if (res.error) {
-		const code = (res.error as { code?: string }).code;
-		if (code === "ENOENT") {
-			return { available: false, detail: `${command} not found on PATH` };
-		}
-		return { available: false, detail: firstLine(res.error.message) || "could not run it" };
+	const res = spawnSync(command, ["--version"], { encoding: "utf8", windowsHide: true, timeout: timeoutMs });
+	return judgeVersion(provider, flattenSync(res), timeoutMs);
+}
+
+/**
+ * The non-blocking version check the settings tab uses.
+ *
+ * Same verdict as `probeProvider` and the same 10 second limit, spawned so a wedged CLI cannot
+ * freeze Obsidian's main thread while the tab renders.
+ */
+export async function probeProviderAsync(
+	provider: ProviderId,
+	timeoutMs = VERSION_TIMEOUT_MS,
+): Promise<VersionProbe> {
+	const run = await runProbeProcess(COMMANDS[provider], ["--version"], {
+		cwd: tmpdir(),
+		timeoutMs,
+	});
+	return judgeVersion(provider, run, timeoutMs);
+}
+
+/** One verdict for both version paths, so the sync and async probes cannot disagree. */
+function judgeVersion(provider: ProviderId, run: ProbeRun, timeoutMs: number): VersionProbe {
+	const command = COMMANDS[provider];
+	if (run.spawnCode === "ENOENT") {
+		return { available: false, detail: `${command} not found on PATH` };
 	}
-	if (res.status !== 0) {
-		return { available: false, detail: firstLine(res.stderr ?? "") || `exited with code ${res.status}` };
+	if (run.timedOut) {
+		return {
+			available: false,
+			detail: `${command} did not answer within ${Math.round(timeoutMs / 1000)}s`,
+		};
 	}
-	return { available: true, detail: firstLine(res.stdout ?? "") || "installed" };
+	if (run.spawnCode !== undefined) {
+		return { available: false, detail: firstLine(run.spawnMessage ?? "") || "could not run it" };
+	}
+	if (run.status !== 0) {
+		return { available: false, detail: firstLine(run.stderr) || `exited with code ${run.status}` };
+	}
+	return { available: true, detail: firstLine(run.stdout) || "installed" };
 }
 
 /**
