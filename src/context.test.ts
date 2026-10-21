@@ -10,7 +10,7 @@ import {
 	clampCommitCount,
 	clampTimeoutSeconds,
 	COMMIT_COUNT_DEFAULT,
-	parsePorcelainPath,
+	parsePorcelainZ,
 } from "./context.ts";
 import { emptyMachineState } from "./machine-state.ts";
 import { DEFAULT_WEIGHTS } from "./rank.ts";
@@ -129,6 +129,26 @@ describe("buildGitContext", () => {
     assert.deepEqual(buildGitContext(factsFor(dir), 20).dirtyFiles, ["my notes.md"]);
   });
 
+	it("lists a renamed file once, under its new path", () => {
+		// `git status --porcelain -z` emits `RM new.txt\0old.txt\0`. The old path
+		// is a separate field with no status columns, so parsing it as an entry
+		// slices off its first two characters and leaks a bogus path into the
+		// prompt.
+		const dir = makeRepo((d) => {
+			fs.writeFileSync(path.join(d, "old.txt"), "original");
+			spawnSync("git", ["add", "."], { cwd: d });
+			spawnSync("git", ["commit", "-qm", "init"], { cwd: d });
+			spawnSync("git", ["mv", "old.txt", "new.txt"], { cwd: d });
+			fs.writeFileSync(path.join(d, "new.txt"), "modified after rename");
+		});
+		created.push(dir);
+
+		const context = buildGitContext(factsFor(dir, { dirtyCount: 1 }), 20);
+
+		assert.deepEqual(context.dirtyFiles, ["new.txt"]);
+		assert.equal(context.dirtyCount, context.dirtyFiles.length);
+	});
+
 	it("keeps a tab out of the sha when a subject contains one", () => {
 		// git separates the two with a tab, and a subject may itself contain tabs. If
 		// the split were on the wrong tab the sha would be wrong, and a wrong sha in
@@ -194,25 +214,29 @@ describe("clampTimeoutSeconds", () => {
 	});
 });
 
-describe("parsePorcelainPath", () => {
-	it("reads the path after the two status columns", () => {
-		assert.equal(parsePorcelainPath(" M src/main.ts"), "src/main.ts");
-		assert.equal(parsePorcelainPath("M  staged.ts"), "staged.ts");
-		assert.equal(parsePorcelainPath("?? new.ts"), "new.ts");
-		assert.equal(parsePorcelainPath("A  added.ts"), "added.ts");
+describe("parsePorcelainZ", () => {
+	it("takes the new path from a rename and skips the original", () => {
+		assert.deepEqual(parsePorcelainZ("RM new.txt\0old.txt\0"), ["new.txt"]);
 	});
 
-	it("takes the new name from a rename", () => {
-		assert.equal(parsePorcelainPath("R  old.ts -> new.ts"), "new.ts");
+	it("takes the new path from a copy and skips the original", () => {
+		assert.deepEqual(parsePorcelainZ("C  copy.txt\0orig.txt\0"), ["copy.txt"]);
 	});
 
-	it("unquotes a path git quoted", () => {
-		assert.equal(parsePorcelainPath('?? "a file.md"'), "a file.md");
+	it("keeps spaces and newlines inside a raw path", () => {
+		assert.deepEqual(parsePorcelainZ(" M first.txt\0?? path with space.txt\0?? line\nbreak.txt\0"), [
+			"first.txt",
+			"path with space.txt",
+			"line\nbreak.txt",
+		]);
 	});
 
-	it("rejects a line too short to hold a path", () => {
-		assert.equal(parsePorcelainPath(""), null);
-		assert.equal(parsePorcelainPath(" M "), null);
+	it("ignores empty and too-short fields", () => {
+		assert.deepEqual(parsePorcelainZ("\0\0M \0\0 M a.txt\0\0"), ["a.txt"]);
+	});
+
+	it("handles a missing trailing NUL", () => {
+		assert.deepEqual(parsePorcelainZ(" M a.txt"), ["a.txt"]);
 	});
 });
 

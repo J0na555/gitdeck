@@ -11,7 +11,7 @@
  */
 
 /**
- * The tail of each project's pin writes, by project name.
+ * The tail of each project's pin writes, by project key.
  *
  * One entry per project, not one per write, because writes for one project must not
  * interleave: `applyPin` puts a failed write's row back at the rank the previous write
@@ -41,18 +41,18 @@ export class PinQueue {
 	 * tail never rejects: a rejected tail would leave the next pin for this project
 	 * queued behind a promise that never settles, so it would silently never run.
 	 */
-	queue(name: string, write: () => Promise<void>): Promise<void> {
-		const previous = this.tails.get(name) ?? Promise.resolve();
+	queue(key: string, write: () => Promise<void>): Promise<void> {
+		const previous = this.tails.get(key) ?? Promise.resolve();
 		const queued = previous.then(write);
 		const tail = queued.catch(() => {});
-		this.tails.set(name, tail);
+		this.tails.set(key, tail);
 		void tail.then(() => {
 			// Identity, not an unconditional delete. By the time this write settles, a
 			// newer one for the same project may already own the entry, and deleting it
 			// then would drop that newer write out of the queue: the next pin would not
 			// wait for it, and `settle` would stop waiting for it too. That is the race
 			// this queue exists to prevent, reintroduced through its own bookkeeping.
-			if (this.tails.get(name) === tail) this.tails.delete(name);
+			if (this.tails.get(key) === tail) this.tails.delete(key);
 		});
 		return queued;
 	}

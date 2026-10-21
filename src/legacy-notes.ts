@@ -12,7 +12,37 @@
  * No `obsidian` import, so `node --test` loads this directly.
  */
 import { sanitizeBase, type SummaryBody } from "./summary.ts";
-import type { SummaryRecord } from "./types.ts";
+import type { LegacyNoteState, LegacySummaryFrontmatter } from "./machine-state.ts";
+import type { ProjectFrontmatter, SummaryRecord } from "./types.ts";
+
+/**
+ * One legacy note's frontmatter reduced to the fields the seed and the migration need.
+ *
+ * Pure and here rather than in `vault.ts`, because the vault walk cannot be tested: it takes
+ * Obsidian's metadata cache and hands back whatever YAML parsed to. This function is where
+ * that untyped object becomes a claim this plugin is willing to act on.
+ *
+ * `repoPath` is trimmed and dropped when empty. The migration ignores a relative path rather
+ * than resolving it, so an empty string would otherwise be read as "the cwd" and turn into
+ * evidence for whichever repo happened to be there.
+ */
+export function legacyNoteStateFromFrontmatter(
+	basename: string,
+	fm: (ProjectFrontmatter & LegacySummaryFrontmatter) | undefined,
+): LegacyNoteState {
+	const rawRepoPath = typeof fm?.repo_path === "string" ? fm.repo_path.trim() : "";
+	return {
+		// The filename is the fallback rather than the primary key: a note whose `project` was
+		// hand-edited away is still that project's note, and dropping it would lose a pin.
+		project: typeof fm?.project === "string" && fm.project !== "" ? fm.project : basename,
+		repoPath: rawRepoPath === "" ? undefined : rawRepoPath,
+		pinned: fm?.pinned,
+		dirty: fm?.dirty,
+		// Null unless the note says it is ours. A `commit` key in a hand-written note is not a
+		// summary, and `stampFromLegacySummary` is what refuses it.
+		summary: fm && fm.ai_generated === true ? fm : null,
+	};
+}
 
 /** Suffix v0.1 gave a generated summary note. */
 export const AI_SUFFIX = "-ai";
@@ -119,11 +149,15 @@ export function findLegacySummaryNotes(
 		// Frontmatter first, filename as the fallback for a note whose `project` key was
 		// hand-edited away, which must not orphan a summary.
 		const projectName = projectNameFromLegacySummary(path, header.project);
-		if (projectName === null || seen.has(projectName)) continue;
+		// Deduplicated by the recorded repo path when there is one, because two repos can share
+		// the basename `api` and each has its own summary note. Keying only by name would keep
+		// the first `api` note and silently drop the second repo's text before it was imported.
+		const identity = header.repoPath ?? projectName;
+		if (projectName === null || identity === null || seen.has(identity)) continue;
 		const body = extractSummaryBody(markdown);
 		if (body === null) continue;
 
-		seen.add(projectName);
+		seen.add(identity);
 		found.push({ projectName, path, body, header });
 	}
 
@@ -142,6 +176,11 @@ export interface LegacySummaryNote {
 /** What a v0.1 note's own frontmatter says, parsed and checked. */
 export interface LegacyNoteHeader {
 	project: string | null;
+	/**
+	 * The repo path the note recorded, or null when it did not. Used to attribute a summary to
+	 * one of two same-basename repos, and never as a display value.
+	 */
+	repoPath: string | null;
 	/** The CLI that wrote it. */
 	provider: string | null;
 	/** ISO 8601 generation time, or null when it is not one. */
@@ -165,8 +204,13 @@ export function readLegacyHeader(markdown: string): LegacyNoteHeader {
 	const generatedAt = frontmatterValue(markdown, "generated_at");
 	const commit = frontmatterValue(markdown, "commit");
 	const dirtyCount = frontmatterValue(markdown, "dirty_count");
+	const repoPath = frontmatterValue(markdown, "repo_path");
 	return {
 		project: frontmatterValue(markdown, "project"),
+		// A quoted value of only spaces survives `frontmatterValue` as a string of spaces, and
+		// a path that is blank is not evidence for anything. Trim here so the caller can treat
+		// null and blank the same way.
+		repoPath: repoPath !== null && repoPath.trim() !== "" ? repoPath.trim() : null,
 		provider: frontmatterValue(markdown, "provider"),
 		generatedAt: generatedAt !== null && !Number.isNaN(Date.parse(generatedAt)) ? new Date(generatedAt).toISOString() : null,
 		// Checked rather than trusted. A stamp is what staleness is judged against, and a

@@ -229,22 +229,28 @@ export type ProviderId = "gemini" | "codex" | "opencode";
  * `version` is the seed guard. An install upgrading from the note-based layout has real
  * pins and real dirty counts in notes that exist nowhere else, and there is exactly one
  * moment they are readable.
+ *
+ * All three records are keyed by `projectKey(facts.path)` rather than by the display name.
+ * A basename is not an identity: two repositories called `api` used to share one pin, one
+ * dirty history and one summary record. Legacy basename keys may still be present in
+ * `data.json` until the path migration has run; they are inert, and nothing reads them for a
+ * project whose key is an absolute path.
  */
 export interface MachineState {
 	/** Layout version of what is stored here. See `STATE_VERSION`. */
 	version: number;
 	/**
-	 * Pin rank per project name. A name absent here is unpinned, and so is every rank
+	 * Pin rank per project key. A key absent here is unpinned, and so is every rank
 	 * the sanitizer rejects, so a corrupt data.json costs a pin rather than the panel.
 	 */
 	pins: Record<string, number>;
 	/**
-	 * Uncommitted file count per project at the previous scan. Absent means this scan is
+	 * Uncommitted file count per project key at the previous scan. Absent means this scan is
 	 * the first to see the project, which the sustained-dirty warning reads as "no
 	 * history" rather than as zero.
 	 */
 	previousDirty: Record<string, number>;
-	/** What each AI summary was written from, per project name. */
+	/** What each AI summary was written from, per project key. */
 	summaries: Record<string, SummaryRecord>;
 	/**
 	 * True once the v0.1 summary notes have been copied into the dashboard.

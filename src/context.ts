@@ -47,11 +47,17 @@ export interface GitContext {
 	remote: string | null;
 }
 
-/** Run git and return trimmed stdout, or null when it fails. */
-function git(cwd: string, args: string[]): string | null {
+/** Run git and return raw stdout, or null when it fails. */
+function gitRaw(cwd: string, args: string[]): string | null {
 	const res = spawnSync("git", args, { cwd, encoding: "utf8", windowsHide: true, maxBuffer: 4 * 1024 * 1024 });
 	if (res.error || res.status !== 0) return null;
-	return res.stdout.trim();
+	return res.stdout;
+}
+
+/** Run git and return trimmed stdout, or null when it fails. */
+function git(cwd: string, args: string[]): string | null {
+	const out = gitRaw(cwd, args);
+	return out === null ? null : out.trim();
 }
 
 /** Clamp a user-entered commit count into a range that cannot blow up a prompt. */
@@ -93,37 +99,10 @@ export function buildGitContext(facts: RepoFacts, commitCount: number): GitConte
 				})
 		: [];
 
-  const porcelain = git(repo, ["status", "--porcelain", "-z"]);
-  const dirtyFiles = porcelain
-    ? porcelain
-        .split("\0")
-        .filter((entry) => entry.length > 0)
-        .map((entry) => {
-          // With -z, git emits NUL-separated entries; the path starts at index 3
-          // and is not quoted. Do not trim the entry to avoid stripping meaningful chars.
-          if (entry.length < 3) return null;
-          // With -z, the first two chars are status (or ??) and possibly a space char
-          // in the third position for some formats? Standard is XY followed by space then path
-          // or XY followed by path char for untracked? But we need to be precise
-          let start = 2;
-          if (entry.length >= 3 && entry[2] === ' ') {
-            start = 3;
-          }
-          const rest = entry.slice(start);
-          if (rest.length === 0) return null;
-          const arrow = rest.lastIndexOf(" -> ");
-          const value = arrow === -1 ? rest : rest.slice(arrow + 4);
-          if (value.startsWith('"') && value.endsWith('"') && value.length >= 2) {
-            try {
-              return JSON.parse(value) as string;
-            } catch {
-              return value.slice(1, -1);
-            }
-          }
-          return value;
-        })
-        .filter((file): file is string => file !== null)
-    : [];
+	// Raw stdout: trimming would strip the leading status space from the first
+	// entry (` M path`), shifting every path by one character.
+	const porcelain = gitRaw(repo, ["status", "--porcelain", "-z"]);
+	const dirtyFiles = porcelain ? parsePorcelainZ(porcelain) : [];
 
 	const head = git(repo, ["rev-parse", "--short", "HEAD"]);
 
@@ -143,27 +122,34 @@ export function buildGitContext(facts: RepoFacts, commitCount: number): GitConte
 }
 
 /**
- * Extract a path from one `git status --porcelain` line.
+ * Extract the paths from `git status --porcelain -z`.
  *
- * The first two columns are the staged and unstaged status codes, the third is a
- * space, and the rest is the path. Renames read `old -> new`; the new name is the
- * one the user recognises. A path with spaces or quotes comes back quoted from
- * git, so the quotes are stripped.
+ * With `-z`, entries are NUL-separated and paths are raw: no quoting, no
+ * escaping, and a path may contain spaces, tabs, or newlines. A rename or copy
+ * emits an extra NUL-separated field holding the original path immediately after
+ * the entry that names the new one, so that field has to be consumed rather than
+ * parsed as an entry of its own.
+ *
+ * A field is `XY`, a space, then at least one path character, so anything
+ * shorter cannot hold a path. Empty fields (including the one after a trailing
+ * NUL) are ignored.
  */
-export function parsePorcelainPath(line: string): string | null {
-	if (line.length < 4) return null;
-	const rest = line.slice(3).trim();
-	if (rest.length === 0) return null;
-	const arrow = rest.lastIndexOf(" -> ");
-	const value = arrow === -1 ? rest : rest.slice(arrow + 4);
-	if (value.startsWith('"') && value.endsWith('"') && value.length >= 2) {
-		try {
-			return JSON.parse(value) as string;
-		} catch {
-			return value.slice(1, -1);
-		}
+export function parsePorcelainZ(output: string): string[] {
+	const fields = output.split("\0");
+	const paths: string[] = [];
+
+	for (let i = 0; i < fields.length; i++) {
+		const entry = fields[i];
+		if (entry.length < 4) continue;
+
+		paths.push(entry.slice(3));
+
+		// The next field is the original path for a rename or copy. Consume it
+		// so it is not mistaken for a status entry.
+		if (entry[0] === "R" || entry[0] === "C") i++;
 	}
-	return value;
+
+	return paths;
 }
 
 /**

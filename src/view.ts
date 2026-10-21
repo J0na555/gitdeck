@@ -5,6 +5,7 @@ import { describeFilter, filterProjects, isFiltering, nextStateOnEscape } from "
 import type { FilterRow, FilterState } from "./filter";
 import { moveSelection, NO_SELECTION, reconcileSelection } from "./keys";
 import { openProjectNote, openSummaryNote } from "./note-open";
+import { projectKey } from "./identity";
 import { drawPanelBody } from "./panel-body";
 import { PanelHeader } from "./panel-header";
 import { bindPanelKeys, unbindPanelKeys } from "./panel-keys";
@@ -30,7 +31,7 @@ export class GitdeckView extends ItemView {
 	private projects: Project[] = [];
 	private now = Date.now();
 	private scanning = false;
-	/** Project names with a summary run in flight, so the button cannot double-fire. */
+	/** Project keys with a summary run in flight, so the button cannot double-fire. */
 	private summarizing = new Set<string>();
 	/**
 	 * True from `onClose` on, so nothing that settles late draws into a dead view. A pin
@@ -45,8 +46,8 @@ export class GitdeckView extends ItemView {
 	 */
 	private viewFilters = { query: "", activeOnly: false, pinnedOnly: false };
 
-	/** The selection, remembered by name. See `reconcileSelection`. */
-	private selectedName: string | null = null;
+	/** The selection, remembered by project key. See `reconcileSelection`. */
+	private selectedKey: string | null = null;
 	private selectedIndex = NO_SELECTION;
 	/**
 	 * What is on screen, in display order. The project and its element in one entry,
@@ -187,9 +188,11 @@ export class GitdeckView extends ItemView {
 
 		// The selection is resolved before anything is drawn, because a row has to
 		// know whether it is the selected one while it is being built.
-		const names = result.rows.map((row) => row.project.facts.name);
-		this.selectedIndex = reconcileSelection(this.selectedIndex, names, this.selectedName);
-		this.selectedName = names[this.selectedIndex] ?? null;
+		// Keys, not display names: two repos named `api` are two rows, and a name-keyed
+		// selection would jump between them when the list is rebuilt.
+		const keys = result.rows.map((row) => projectKey(row.project.facts.path));
+		this.selectedIndex = reconcileSelection(this.selectedIndex, keys, this.selectedKey);
+		this.selectedKey = keys[this.selectedIndex] ?? null;
 
 		header.update({
 			query: filters.query,
@@ -299,7 +302,8 @@ export class GitdeckView extends ItemView {
 
 	private moveSelectionBy(direction: 1 | -1): void {
 		this.selectedIndex = moveSelection(this.selectedIndex, this.visible.length, direction);
-		this.selectedName = this.selectedProject()?.facts.name ?? null;
+		const project = this.selectedProject();
+		this.selectedKey = project ? projectKey(project.facts.path) : null;
 		this.render();
 	}
 
@@ -316,7 +320,7 @@ export class GitdeckView extends ItemView {
 	 */
 	private selectRow(index: number, project: Project): void {
 		this.selectedIndex = index;
-		this.selectedName = project.facts.name;
+		this.selectedKey = projectKey(project.facts.path);
 		this.render();
 	}
 
@@ -381,8 +385,9 @@ export class GitdeckView extends ItemView {
 	 * user could see.
 	 */
 	private async runSummary(project: Project): Promise<void> {
-		if (this.summarizing.has(project.facts.name)) return;
-		this.summarizing.add(project.facts.name);
+		const key = projectKey(project.facts.path);
+		if (this.summarizing.has(key)) return;
+		this.summarizing.add(key);
 		this.render();
 		try {
 			await this.plugin.generateSummary(project);
@@ -395,7 +400,7 @@ export class GitdeckView extends ItemView {
 				0,
 			);
 		} finally {
-			this.summarizing.delete(project.facts.name);
+			this.summarizing.delete(key);
 			this.render();
 		}
 	}

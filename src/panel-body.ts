@@ -14,6 +14,7 @@
  */
 import { describeGroup, explainGroup } from "./filter.ts";
 import type { FilterResult } from "./filter.ts";
+import { projectKey } from "./identity.ts";
 import { createProjectRow } from "./row-controls.ts";
 import type { Project } from "./types.ts";
 
@@ -28,7 +29,7 @@ export interface PanelBodyOptions {
 	editorLabel: (project: Project) => string;
 	/** One clock for every row, so ages on the same panel agree. */
 	now: number;
-	/** Project names with a summary in flight, so their control is disabled. */
+	/** Project keys with a summary in flight, so their control is disabled. */
 	summarizing: ReadonlySet<string>;
 	/** Put the keyboard selection on a row the user clicked. */
 	onSelect: (index: number, project: Project) => void;
@@ -89,7 +90,7 @@ function drawRow(
 		explainScores: options.explainScores,
 		editorLabel: options.editorLabel(project),
 		now: options.now,
-		summarizing: options.summarizing.has(project.facts.name),
+		summarizing: options.summarizing.has(projectKey(project.facts.path)),
 		// The index is this row's place in the visible list, which is what the selection
 		// is an index into. Row order and selection order are the same order here
 		// because every row comes out of `group.rows` in display order.

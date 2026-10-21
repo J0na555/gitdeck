@@ -10,6 +10,6 @@ export function normalizePath(input: string): string {
 	return input
 		.replace(/([\\/])+/g, "/")
 		.replace(/(^\/+|\/+$)/g, "")
-		.replace(/ | /g, " ")
+		.replace(/\u00a0|\u2009/g, " ")
 		.normalize("NFC");
 }

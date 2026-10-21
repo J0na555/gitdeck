@@ -6,6 +6,7 @@ import {
 	findLegacySummaryNotes,
 	isLegacySummaryPath,
 	legacyFolders,
+	legacyNoteStateFromFrontmatter,
 	legacySummaryFileName,
 	projectNameFromLegacySummary,
 	readLegacyHeader,
@@ -152,9 +153,12 @@ describe("extractSummaryBody", () => {
 describe("findLegacySummaryNotes", () => {
 	it("finds the summaries and names their projects", () => {
 		const paths = ["Notes/api-ai-ai.md", "Notes/web-ai-ai.md", "Notes/unrelated.md"];
-		const found = findLegacySummaryNotes(paths, (path) =>
-			legacyNote({ project: path.includes("web") ? "web-ai" : "api-ai" }),
-		);
+		const found = findLegacySummaryNotes(paths, (path) => {
+			const note = legacyNote({ project: path.includes("web") ? "web-ai" : "api-ai" });
+			// The default fixture records one repo path. Give each project its own, because the
+			// dedupe key is the path now that two repos can share a basename.
+			return path.includes("web") ? note.replace("/home/me/projects/api-ai", "/home/me/projects/web-ai") : note;
+		});
 		assert.deepEqual(
 			found.map((note) => [note.projectName, note.path]),
 			[
@@ -191,6 +195,26 @@ describe("findLegacySummaryNotes", () => {
 		);
 		assert.equal(found.length, 1);
 		assert.equal(found[0].body.summary, "The original.");
+	});
+
+	it("keeps two same-basename summaries that name different repo paths", () => {
+		// Two repos can both be called `api`. Their summary notes have the same `project` and
+		// different `repo_path`, and collapsing them by name would silently drop one repo's text.
+		const first = legacyNote({ project: "api", summary: "The first api." }).replace(
+			"/home/me/projects/api-ai",
+			"/home/me/projects/one/api",
+		);
+		const second = legacyNote({ project: "api", summary: "The second api." }).replace(
+			"/home/me/projects/api-ai",
+			"/home/me/projects/two/api",
+		);
+		const found = findLegacySummaryNotes(["a/api-ai.md", "b/api-ai.md"], (path) =>
+			path.startsWith("a/") ? first : second,
+		);
+		assert.deepEqual(
+			found.map((note) => note.header.repoPath),
+			["/home/me/projects/one/api", "/home/me/projects/two/api"],
+		);
 	});
 
 	it("skips a note with no summary body in it", () => {
@@ -244,6 +268,7 @@ describe("readLegacyHeader", () => {
 		const header = readLegacyHeader(legacyNote());
 		assert.deepEqual(header, {
 			project: "api-ai",
+			repoPath: "/home/me/projects/api-ai",
 			provider: "codex",
 			generatedAt: "2026-09-01T10:00:00.000Z",
 			commit: "de1b882",
@@ -285,6 +310,49 @@ describe("readLegacyHeader", () => {
 	});
 });
 
+describe("legacyNoteStateFromFrontmatter", () => {
+	it("falls back to the basename when the note has no project", () => {
+		assert.deepEqual(legacyNoteStateFromFrontmatter("api", undefined), {
+			project: "api",
+			repoPath: undefined,
+			pinned: undefined,
+			dirty: undefined,
+			summary: null,
+		});
+	});
+
+	it("trims the recorded repo path and drops a blank one", () => {
+		assert.equal(
+			legacyNoteStateFromFrontmatter("api", { project: "api", repo_path: "  /repos/one/api  " }).repoPath,
+			"/repos/one/api",
+		);
+		assert.equal(
+			legacyNoteStateFromFrontmatter("api", { project: "api", repo_path: "   " }).repoPath,
+			undefined,
+		);
+		assert.equal(legacyNoteStateFromFrontmatter("api", { project: "api" }).repoPath, undefined);
+	});
+
+	it("only calls a note a summary when the marker says so", () => {
+		const generated = { project: "api", ai_generated: true, commit: "abc1234" };
+		assert.equal(legacyNoteStateFromFrontmatter("api", generated).summary, generated);
+		assert.equal(legacyNoteStateFromFrontmatter("api", { project: "api", commit: "abc1234" }).summary, null);
+		assert.equal(legacyNoteStateFromFrontmatter("api", { project: "api", ai_generated: false }).summary, null);
+	});
+});
+
+describe("readLegacyHeader repo_path", () => {
+	it("parses the recorded repo path", () => {
+		assert.equal(readLegacyHeader(legacyNote()).repoPath, "/home/me/projects/api-ai");
+	});
+
+	it("returns null when the key is absent or blank", () => {
+		const without = legacyNote().replace(/^repo_path:.*$/m, "");
+		assert.equal(readLegacyHeader(without).repoPath, null);
+		assert.equal(readLegacyHeader(legacyNote().replace(/^repo_path:.*$/m, 'repo_path: "  "')).repoPath, null);
+	});
+});
+
 describe("recordFromLegacyHeader", () => {
 	it("carries the freshness across so the panel can judge staleness", () => {
 		const record = recordFromLegacyHeader(readLegacyHeader(legacyNote()));
@@ -297,6 +365,7 @@ describe("recordFromLegacyHeader", () => {
 		assert.equal(
 			recordFromLegacyHeader({
 				project: "p",
+				repoPath: null,
 				provider: null,
 				generatedAt: null,
 				commit: null,
@@ -310,6 +379,7 @@ describe("recordFromLegacyHeader", () => {
 	it("keeps a partial record rather than dropping all of it", () => {
 		const record = recordFromLegacyHeader({
 			project: "p",
+			repoPath: null,
 			provider: null,
 			generatedAt: "2026-09-01T10:00:00.000Z",
 			commit: null,

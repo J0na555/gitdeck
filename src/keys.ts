@@ -128,10 +128,11 @@ export function moveSelection(index: number, length: number, direction: 1 | -1):
 /**
  * Where the selection should be after the list has been rebuilt.
  *
- * The selection is remembered by project name, not by index, because a row's index is not a
+ * The selection is remembered by project key, not by index, because a row's index is not a
  * fact about the project: pinning it moves it, and a summary finishing re-renders the list
- * around it. Keying on the name means the row the user is looking at stays the row they are
- * looking at, and `j` afterwards continues from its new position.
+ * around it. Keying on the path means the row the user is looking at stays the row they are
+ * looking at, and `j` afterwards continues from its new position. A basename would not: two
+ * repos can share one, and the selection would jump between them.
  *
  * When the filter hides the selected project there is nothing to keep, and the deliberate
  * choice is to stay at the same index rather than jump to the top. The rows above the cursor
@@ -144,13 +145,13 @@ export function moveSelection(index: number, length: number, direction: 1 | -1):
  */
 export function reconcileSelection(
 	previousIndex: number,
-	names: readonly string[],
-	previousName: string | null,
+	keys: readonly string[],
+	previousKey: string | null,
 ): number {
-	if (names.length === 0) return NO_SELECTION;
-	if (previousName !== null) {
-		const found = names.indexOf(previousName);
+	if (keys.length === 0) return NO_SELECTION;
+	if (previousKey !== null) {
+		const found = keys.indexOf(previousKey);
 		if (found >= 0) return found;
 	}
-	return clampSelection(previousIndex, names.length);
+	return clampSelection(previousIndex, keys.length);
 }

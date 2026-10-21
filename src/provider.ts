@@ -8,12 +8,21 @@
 import { spawn, spawnSync } from "child_process";
 import type { SpawnSyncReturns } from "child_process";
 import { tmpdir } from "os";
-import type { ProbeState, ProviderId, ProviderProbe } from "./types.ts";
+import type { ProbeState, ProviderDetection, ProviderId, ProviderProbe } from "./types.ts";
 
 export type { ProviderProbe, ProbeState };
 
 /** Upper bound on a CLI's stdout. A runaway agent should not exhaust memory. */
 const MAX_BUFFER = 8 * 1024 * 1024;
+
+/**
+ * How old a cached probe pass may be before it is worth re-running.
+ *
+ * Seven days. This is a capability check, not a health monitor: an auth fix made in a
+ * terminal should be noticed within a week, and probing on every settings open would
+ * spend three model calls for news that changes rarely.
+ */
+export const DETECTION_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
 
 /** The command each provider is invoked as. */
 const COMMANDS: Record<ProviderId, string> = {
@@ -314,7 +323,7 @@ export function parseSummary(text: string): ProviderResult {
 		if (!record.next_steps.every((item) => typeof item === "string")) {
 			return { ok: false, error: "model reply had a `next_steps` entry that was not a string" };
 		}
-		nextSteps = (record.next_steps as string[]).map((item) => item.trim()).filter((item) => item.length > 0);
+		nextSteps = record.next_steps.map((item) => item.trim()).filter((item) => item.length > 0);
 	}
 
 	return { ok: true, summary: { summary: summary.trim(), nextSteps } };
@@ -951,6 +960,24 @@ export function selectProvider(
 		if (probeFor.get(provider)?.state === "works") return provider;
 	}
 	return null;
+}
+
+/**
+ * Whether a cached probe pass is missing or too old to trust.
+ *
+ * A manual choice means the user has already decided, so detection is not consulted and
+ * nothing is due. With no manual choice, an empty cache (a fresh install) or one older
+ * than `DETECTION_MAX_AGE_MS` needs a pass. Kept pure so the fresh-install path, which
+ * must make zero calls on load, can be asserted without spawning anything.
+ */
+export function detectionNeedsProbe(
+	provider: ProviderId | null,
+	detection: ProviderDetection,
+	now: number = Date.now(),
+): boolean {
+	if (provider !== null) return false;
+	if (detection.checkedAt === 0 || detection.probes.length === 0) return true;
+	return now - detection.checkedAt > DETECTION_MAX_AGE_MS;
 }
 
 /**

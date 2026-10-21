@@ -7,7 +7,9 @@ import {
 	buildArgv,
 	buildInvocation,
 	buildProbeArgv,
+	DETECTION_MAX_AGE_MS,
 	describeFailure,
+	detectionNeedsProbe,
 	detectProviders,
 	detectProvidersAsync,
 	extractOutput,
@@ -1136,6 +1138,52 @@ describe("selectProvider", () => {
 
 	it("returns null with no probes at all", () => {
 		assert.equal(selectProvider(null, []), null);
+	});
+});
+
+describe("detectionNeedsProbe", () => {
+	const cached = (checkedAt: number, count: number) => ({
+		checkedAt,
+		probes: Array.from({ length: count }, () => ({
+			provider: "gemini" as ProviderId,
+			state: "works" as const,
+			detail: "answered a test call",
+			checkedAt,
+		})),
+		selected: null,
+	});
+
+	it("needs a probe on a fresh install, where nothing is selected either", () => {
+		// The state a first load starts in. Both halves matter: no cache means a pass is
+		// due if the user asks for one, and no probes means nothing can be selected.
+		const empty = { checkedAt: 0, probes: [], selected: null };
+		assert.equal(detectionNeedsProbe(null, empty, 1_000), true);
+		assert.equal(selectProvider(null, []), null);
+	});
+
+	it("does not probe when a manual provider is set", () => {
+		// A manual choice is the user's decision, so detection is not consulted even when
+		// the cache is empty or ancient.
+		assert.equal(detectionNeedsProbe("codex", cached(0, 0), 1_000), false);
+		assert.equal(detectionNeedsProbe("codex", cached(1, 3), DETECTION_MAX_AGE_MS * 100), false);
+	});
+
+	it("does not probe a fresh cache", () => {
+		const now = 1_750_000_000_000;
+		assert.equal(detectionNeedsProbe(null, cached(now - 1_000, 3), now), false);
+		assert.equal(detectionNeedsProbe(null, cached(now, 3), now), false);
+	});
+
+	it("probes a cache older than the maximum age", () => {
+		const now = 1_750_000_000_000;
+		assert.equal(detectionNeedsProbe(null, cached(now - DETECTION_MAX_AGE_MS - 1, 3), now), true);
+		// Exactly at the boundary is still fresh: the comparison is older-than, not at-least.
+		assert.equal(detectionNeedsProbe(null, cached(now - DETECTION_MAX_AGE_MS, 3), now), false);
+	});
+
+	it("probes when the timestamp says fresh but the cache holds no probes", () => {
+		// A half-written or hand-edited cache must not read as a completed pass.
+		assert.equal(detectionNeedsProbe(null, cached(1_750_000_000_000, 0), 1_750_000_000_000), true);
 	});
 });
 

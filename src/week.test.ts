@@ -295,7 +295,7 @@ describe("renderWeeklySection", () => {
 	it("puts a project with live work and no commits in the second table", () => {
 		const text = renderWeeklySection([project({}, { dirtyCount: 5 })], commits({}), NOW);
 		assert.match(text, /## Still open, nothing this week/);
-		assert.match(text, /\| api-ai \| main \| 5 \| 2d ago \|  \| no note \|/);
+		assert.match(text, /\| api-ai \| main \| 5 \| 2d ago \| {2}\| no note \|/);
 	});
 
 	it("never puts a project in both tables", () => {

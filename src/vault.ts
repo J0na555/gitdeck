@@ -1,11 +1,13 @@
 import { App, TFile, TFolder, normalizePath } from "obsidian";
 import { spawnSync } from "child_process";
+import type { AtomicOptions, AtomicOutcome, AtomicTarget } from "./atomic-write";
+import { atomicUpdate } from "./atomic-write";
 import { assertSafeTarget, dashboardPath, renderDashboard } from "./dashboard";
 import { replaceSection, sectionBody } from "./markers";
 import type { NoteCandidate } from "./note-link";
-import { stateFromRecord } from "./machine-state";
 import type { LegacyNoteState, LegacySummaryFrontmatter } from "./machine-state";
-import { PluginSettings, Project, ProjectFrontmatter, RepoFacts, SummaryState } from "./types";
+import { legacyNoteStateFromFrontmatter } from "./legacy-notes";
+import { PluginSettings, Project, ProjectFrontmatter } from "./types";
 import { assertSafeWeeklyTarget, isWeeklyNotePath, renderWeeklySection, weeklyFolder, weeklyPath } from "./week";
 
 /** Create `folder` and any missing parents. No-op when it already exists. */
@@ -88,11 +90,61 @@ export function readNoteCandidates(app: App, settings: PluginSettings): NoteCand
 }
 
 /**
+ * A path-addressed target for `atomicUpdate`.
+ *
+ * Every method resolves the path again rather than holding the `TFile` from before the read. A
+ * delete or rename between the two then looks like "not a regular file" and fails safely,
+ * instead of writing through a stale handle or to whatever now sits at the path.
+ *
+ * `read` uses `vault.read`, not `cachedRead`: the point of the snapshot is to notice a change,
+ * and the cache is the thing that would not.
+ */
+function noteTarget(app: App, path: string): AtomicTarget {
+	return {
+		read: async () => {
+			const file = app.vault.getAbstractFileByPath(path);
+			if (!(file instanceof TFile)) return null;
+			return app.vault.read(file);
+		},
+		process: async (transform) => {
+			const file = app.vault.getAbstractFileByPath(path);
+			if (!(file instanceof TFile)) throw new Error(`no file at ${path}`);
+			return app.vault.process(file, transform);
+		},
+		create: async (content) => {
+			await app.vault.create(path, content);
+		},
+	};
+}
+
+/**
+ * Run a dashboard update through `atomicUpdate`.
+ *
+ * The guard stays here rather than inside `atomicUpdate` because it is about the dashboard path,
+ * not about atomic writes in general. It also runs before the file is touched, so a caller that
+ * computed the wrong path fails loudly without writing there first.
+ */
+export async function updateDashboard(
+	app: App,
+	settings: PluginSettings,
+	transform: (doc: string) => string,
+	options: AtomicOptions,
+): Promise<AtomicOutcome> {
+	const target = dashboardPath(settings);
+	assertSafeTarget(settings, target);
+	return atomicUpdate(noteTarget(app, target), transform, options);
+}
+
+/**
  * Write the dashboard: the project table inside its markers, and nothing else.
  *
- * Reads before writing so a scan that changes nothing does not modify the file. The dashboard
- * sits in the user's vault next to their own notes, and a plugin that rewrites an identical file
- * every 30 seconds shows up as a change in whatever syncs that vault.
+ * The marker replacement runs inside `vault.process`, on the fresh contents, so a user edit
+ * outside the markers between the read and the write survives. The first transform on the
+ * snapshot only decides whether there is anything to do; the callback redoes the work against
+ * whatever is actually on disk.
+ *
+ * The caller must hold `dashboardWrites`: the scan and summary generation both write this file,
+ * and serialising only the writes would still let the second writer start from a stale read.
  *
  * A failure here is not worth a notice. The panel already has everything it shows; this file is a
  * view of the same data, and a vault that cannot be written is the user's problem to see in
@@ -108,60 +160,16 @@ export async function syncDashboard(
 	assertSafeTarget(settings, target);
 	await ensureFolder(app, settings.notesFolder);
 
-	const existing = app.vault.getAbstractFileByPath(target);
-	let doc: string | null = null;
-	if (existing instanceof TFile) {
-		try {
-			doc = await app.vault.read(existing);
-		} catch {
-			return null;
-		}
-	}
-
-	let content: string;
-	try {
-		content = renderDashboard(doc ?? "", projects, now);
-	} catch {
-		// A generated body carrying a marker would break the section structure the next write
-		// depends on. Refusing the write keeps the note intact; the panel is unaffected.
-		return null;
-	}
-
-	return writeDashboard(app, settings, content, doc);
-}
-
-/**
- * Write specific content to the dashboard.
- *
- * `previous` is what was read, or null when the file does not exist, and is only there so the
- * write can be skipped when nothing changed. Two callers: the scan, and summary generation.
- */
-export async function writeDashboard(
-	app: App,
-	settings: PluginSettings,
-	content: string,
-	previous: string | null,
-): Promise<string | null> {
-	const target = dashboardPath(settings);
-	assertSafeTarget(settings, target);
-	const existing = app.vault.getAbstractFileByPath(target);
-
-	if (existing instanceof TFile) {
-		if (previous === content) return target;
-		try {
-			await app.vault.modify(existing, content);
-		} catch {
-			return null;
-		}
-		return target;
-	}
-
-	try {
-		await app.vault.create(target, content);
-	} catch {
-		return null;
-	}
-	return target;
+	// A generated body carrying a marker would break the section structure the next write
+	// depends on. `renderDashboard` throws for that, which `atomicUpdate` turns into a failed
+	// outcome and no write.
+	const outcome = await updateDashboard(
+		app,
+		settings,
+		(doc) => renderDashboard(doc, projects, now),
+		{ missing: "create" },
+	);
+	return outcome.status === "written" || outcome.status === "unchanged" ? target : null;
 }
 
 /**
@@ -172,17 +180,22 @@ export async function writeDashboard(
  * midnight on Sunday must not render one week and validate against another, and re-deriving
  * `now` anywhere below is how that would happen.
  *
- * Reads before writing so a scan that changes nothing does not modify the file, for the same
- * reason the dashboard does not: this sits in the user's vault and rewriting an identical file
- * every 30 seconds shows up as a change in whatever syncs that vault. Only this week's file is
- * ever touched; earlier weeks stay where they were written.
+ * The marker replacement runs inside `vault.process`, on the fresh contents, so a user edit
+ * outside the markers between the read and the write survives. The first transform on the
+ * snapshot only decides whether there is anything to do; the callback redoes the work against
+ * whatever is actually on disk. A scan that changes nothing still skips the write, for the same
+ * reason the dashboard does: this sits in the user's vault and rewriting an identical file every
+ * 30 seconds shows up as a change in whatever syncs that vault. Only this week's file is ever
+ * touched; earlier weeks stay where they were written.
  *
  * Unlike the dashboard, this never adopts a file that is already at its path. The dashboard's
  * path comes from a setting the user points at the plugin's own file, so an existing file there
  * is expected and appending to it is the feature. This path is generated from the week, so a file
  * already sitting on it was not made by the plugin. Obsidian's core weekly notes use the same
  * filename shape, and appending machine tables into somebody's journal is not a thing to guess
- * at. When the file exists but has no weekly section, the write is skipped and null returned.
+ * at. The guard runs both before the write and again inside the callback, because a file can
+ * appear or lose its section while the write is in flight. When the file exists but has no
+ * weekly section, the write is skipped and null returned.
  *
  * A refused write or an unreadable vault returns null rather than throwing. The panel already
  * has everything it shows; this file is a view of the same data.
@@ -198,81 +211,58 @@ export async function syncWeekly(
 	assertSafeWeeklyTarget(settings, target, now);
 	await ensureFolder(app, weeklyFolder(settings));
 
-	const existing = app.vault.getAbstractFileByPath(target);
-	let doc: string | null = null;
-	if (existing instanceof TFile) {
-		try {
-			doc = await app.vault.read(existing);
-		} catch {
-			return null;
-		}
-		// A file already at this path was not made by us. Obsidian's core weekly notes share the
-		// `YYYY-Www.md` name, so a file with no weekly section is left alone rather than having
-		// machine tables appended into it. The dashboard does the opposite on purpose: see the
-		// header comment for why the two paths differ.
-		if (sectionBody(doc ?? "", "weekly") === null) return null;
-	}
-
-	let content: string;
-	try {
-		content = replaceSection(doc ?? "", "weekly", renderWeeklySection(projects, commitsThisWeek, now));
-	} catch {
-		// A project name carrying a marker prefix would break the section structure the next
-		// write depends on. Refusing keeps the note intact; the panel is unaffected.
-		return null;
-	}
-
-	if (doc === content) return target;
-	if (existing instanceof TFile) {
-		try {
-			await app.vault.modify(existing, content);
-		} catch {
-			return null;
-		}
-		return target;
-	}
-
-	try {
-		await app.vault.create(target, content);
-	} catch {
-		return null;
-	}
-	return target;
+	// A file already at this path was not made by us. Obsidian's core weekly notes share the
+	// `YYYY-Www.md` name, so a file with no weekly section is left alone rather than having
+	// machine tables appended into it. The dashboard does the opposite on purpose: see the
+	// header comment for why the two paths differ. The guard runs on the pre-read snapshot and
+	// again inside the callback, where the file may have changed.
+	const outcome = await atomicUpdate(
+		noteTarget(app, target),
+		(doc) => replaceSection(doc, "weekly", renderWeeklySection(projects, commitsThisWeek, now)),
+		{
+			missing: "create",
+			guard: (doc) => (sectionBody(doc, "weekly") === null ? "foreign" : null),
+		},
+	);
+	return outcome.status === "written" || outcome.status === "unchanged" ? target : null;
 }
 
 /**
- * Every legacy note's managed frontmatter, for the one-time state seed.
+ * Every legacy note's managed frontmatter, for the one-time state seed and the key migration.
  *
- * Only ever called by the upgrade path, and only once. After the seed, this plugin never
- * reads `pinned` or `dirty` out of a note again: a note is a document the user owns, and
- * state that has to be right cannot live in one. See `applyLegacyNotes`.
+ * Called once per refresh while either job is still owed, and the same read feeds both: the
+ * seed wants pins and dirty counts, and the migration wants `repo_path`, which the notes have
+ * carried all along. After the seed, this plugin never reads `pinned` or `dirty` out of a note
+ * again: a note is a document the user owns, and state that has to be right cannot live in one.
+ * See `applyLegacyNotes` and `migrateStateToPaths`.
+ *
+ * `pending` is how many markdown children Obsidian has not indexed yet. The seed must not run
+ * on a cold cache: every note would look like it had no frontmatter, the seed would find
+ * nothing, and it would still write `version = STATE_VERSION`, so the real pins in those notes
+ * would never be read. A caller waits for `pending` to reach zero before seeding.
  */
-export function readLegacyNotes(app: App, settings: PluginSettings): LegacyNoteState[] {
+export function readLegacyNotes(
+	app: App,
+	settings: PluginSettings,
+): { notes: LegacyNoteState[]; pending: number } {
 	const notes: LegacyNoteState[] = [];
+	let pending = 0;
 	const folder = app.vault.getAbstractFileByPath(normalizePath(settings.notesFolder));
-	if (!(folder instanceof TFolder)) return notes;
+	if (!(folder instanceof TFolder)) return { notes, pending };
 
 	for (const child of folder.children) {
 		if (!(child instanceof TFile) || child.extension !== "md") continue;
 		// Read as both shapes at once because a note in this folder is one of two things: a
 		// generated project note, or a generated summary note. Both were written by this plugin,
 		// so either key set appearing without the other is a hand edit rather than a normal case.
-		const fm = app.metadataCache.getFileCache(child)?.frontmatter as
-			| (ProjectFrontmatter & LegacySummaryFrontmatter)
-			| undefined;
-		// The filename is the fallback rather than the primary key: a note whose `project` was
-		// hand-edited away is still that project's note, and dropping it would lose a pin.
-		const project = typeof fm?.project === "string" && fm.project !== "" ? fm.project : child.basename;
-		notes.push({
-			project,
-			pinned: fm?.pinned,
-			dirty: fm?.dirty,
-			// Null unless the note says it is ours. A `commit` key in a hand-written note is
-			// not a summary, and `stampFromLegacySummary` is what refuses it.
-			summary: fm && fm.ai_generated === true ? fm : null,
-		});
+		const cache = app.metadataCache.getFileCache(child);
+		if (cache === undefined) pending++;
+		const fm = cache?.frontmatter as (ProjectFrontmatter & LegacySummaryFrontmatter) | undefined;
+		// The helper owns the fallbacks and the trimming, so the seed and the migration cannot
+		// disagree about what a note said.
+		notes.push(legacyNoteStateFromFrontmatter(child.basename, fm));
 	}
-	return notes;
+	return { notes, pending };
 }
 
 /**
@@ -289,33 +279,4 @@ export function headSha(repoPath: string): string | null {
 	});
 	if (res.error || res.status !== 0) return null;
 	return res.stdout.trim() || null;
-}
-
-/**
- * Rebuild every project's summary state from machine state, comparing each against the repo
- * as it is now.
- *
- * Reads data.json, not notes. Freshness used to be the summary note's frontmatter, which put
- * the answer to "is this out of date" in a file whose whole purpose was to hold the thing
- * being judged. A project with no record is absent from the map, and the panel shows that as
- * "none", which is the normal case: summaries are made on request.
- *
- * `head` is injected rather than called here so this stays a lookup and a comparison. The git
- * call behind it is one `rev-parse` per project, the same one the old reader made.
- */
-export function readSummaryStates(
-	settings: PluginSettings,
-	projects: Project[],
-	head: (facts: RepoFacts) => string | null,
-): Map<string, SummaryState> {
-	const states = new Map<string, SummaryState>();
-	const records = settings.state.summaries;
-
-	for (const project of projects) {
-		const record = records[project.facts.name];
-		if (!record) continue;
-		states.set(project.facts.name, stateFromRecord(record, project.facts, head(project.facts)));
-	}
-
-	return states;
 }

@@ -47,8 +47,12 @@ function project(overrides: Partial<Project> = {}, factOverrides: Partial<RepoFa
 
 function entry(overrides: Partial<SummaryEntry> = {}): SummaryEntry {
 	const record: SummaryRecord = { generatedAt: "2026-10-02T09:00:00.000Z", commit: "de1b882", dirtyCount: 0 };
+	const projectName = overrides.projectName ?? "api-ai";
 	return {
-		projectName: "api-ai",
+		projectName,
+		// Derived from the name so the existing fixtures keep one entry per project without
+		// every call site having to pass a path.
+		repoKey: `/home/me/projects/${projectName}`,
 		provider: "codex",
 		record,
 		body: { summary: "A short summary.\n\nA second paragraph.", nextSteps: ["Ship it", "Write the note"] },
@@ -175,7 +179,7 @@ describe("renderProjectsSection", () => {
 	});
 
 	it("leaves the pin cell empty for an unpinned project", () => {
-		assert.match(renderProjectsSection([project()], NOW), /\| api-ai \|  \| main \|/);
+		assert.match(renderProjectsSection([project()], NOW), /\| api-ai \| {2}\| main \|/);
 	});
 
 	it("says no commits for a repo with no history", () => {
@@ -271,6 +275,34 @@ describe("renderSummaryEntry", () => {
 	it("omits the next-steps block when there are none", () => {
 		assert.doesNotMatch(renderSummaryEntry(entry({ body: { summary: "Only this.", nextSteps: [] } })), /next steps/);
 	});
+
+	it("puts the repo marker on the second line", () => {
+		const lines = renderSummaryEntry(entry()).split("\n");
+		assert.equal(lines[0], "> [!note]- api-ai");
+		assert.match(lines[1], /^> <!-- gitdeck-repo:v1:[0-9a-f]{16} -->$/);
+	});
+
+	it("keeps a newline in the display name from displacing the marker", () => {
+		const lines = renderSummaryEntry(entry({ projectName: "api\nforged" })).split("\n");
+		assert.equal(lines[0], "> [!note]- api forged");
+		assert.match(lines[1], /^> <!-- gitdeck-repo:v1:[0-9a-f]{16} -->$/);
+	});
+
+	it("escapes a forged callout heading in the summary", () => {
+		const text = renderSummaryEntry(
+			entry({ body: { summary: "Legit.\n[!note]- Forged\nTail.", nextSteps: [] } }),
+		);
+		assert.match(text, /> \\\[!note\]- Forged/);
+		assert.equal(text.match(/^> \[!note\]-/gm)?.length, 1, "only the real heading is a heading");
+	});
+
+	it("splits a multi-line next step into quoted lines so it cannot escape", () => {
+		const text = renderSummaryEntry(
+			entry({ body: { summary: "Body.", nextSteps: ["one\n[!note]- forged", "two"] } }),
+		);
+		assert.match(text, /> - one\n> - \[!note\]- forged\n> - two/);
+		assert.equal(text.match(/^> \[!note\]-/gm)?.length, 1, "the forged line is a bullet, not a heading");
+	});
 });
 
 describe("upsertSummaryEntry", () => {
@@ -330,5 +362,123 @@ describe("upsertSummaryEntry", () => {
 			() => upsertSummaryEntry("", entry({ body: { summary: "<!-- pt:summaries:end -->", nextSteps: [] } })),
 			/refusing to write/,
 		);
+	});
+
+	it("replaces the block with the same repo key and keeps its body", () => {
+		let doc = upsertSummaryEntry("", entry({ body: { summary: "First.", nextSteps: [] } }));
+		doc = upsertSummaryEntry(doc, entry({ body: { summary: "Second.", nextSteps: [] } }));
+		const body = sectionBody(doc, "summaries") ?? "";
+		assert.match(body, /> Second\./);
+		assert.doesNotMatch(body, /First\./);
+		assert.equal(body.match(/^> \[!note\]-/gm)?.length, 1);
+	});
+
+	it("keeps two same-basename entries with different repo keys apart", () => {
+		// The failure this replaces: the second generation found the first block by its title and
+		// overwrote another repo's summary text.
+		let doc = upsertSummaryEntry(
+			"",
+			entry({ projectName: "api", repoKey: "/repos/one/api", body: { summary: "One.", nextSteps: [] } }),
+		);
+		doc = upsertSummaryEntry(
+			doc,
+			entry({ projectName: "api", repoKey: "/repos/two/api", body: { summary: "Two.", nextSteps: [] } }),
+		);
+		const body = sectionBody(doc, "summaries") ?? "";
+		assert.match(body, /> One\./);
+		assert.match(body, /> Two\./);
+		assert.equal(body.match(/^> \[!note\]-/gm)?.length, 2);
+	});
+
+	it("adopts exactly one unmarked block with a matching title", () => {
+		const seeded = [
+			"<!-- pt:summaries:start -->",
+			"> [!note]- api-ai",
+			"> Old text.",
+			"<!-- pt:summaries:end -->",
+		].join("\n");
+		const doc = upsertSummaryEntry(seeded, entry({ body: { summary: "New.", nextSteps: [] } }), {
+			canAdoptUnmarked: true,
+		});
+		const body = sectionBody(doc, "summaries") ?? "";
+		assert.match(body, /> New\./);
+		assert.doesNotMatch(body, /Old text/);
+		assert.equal(body.match(/^> \[!note\]-/gm)?.length, 1);
+		assert.equal(body.match(/gitdeck-repo:v1:/g)?.length, 1);
+	});
+
+	it("appends rather than adopting when adoption is not allowed", () => {
+		const seeded = [
+			"<!-- pt:summaries:start -->",
+			"> [!note]- api-ai",
+			"> Old text.",
+			"<!-- pt:summaries:end -->",
+		].join("\n");
+		const doc = upsertSummaryEntry(seeded, entry({ body: { summary: "New.", nextSteps: [] } }), {
+			canAdoptUnmarked: false,
+		});
+		const body = sectionBody(doc, "summaries") ?? "";
+		assert.match(body, /Old text/);
+		assert.match(body, /> New\./);
+		assert.equal(body.match(/^> \[!note\]-/gm)?.length, 2);
+	});
+
+	it("never replaces a block marked for a different repo key, even with the same title", () => {
+		let doc = upsertSummaryEntry(
+			"",
+			entry({ projectName: "api", repoKey: "/repos/one/api", body: { summary: "One.", nextSteps: [] } }),
+		);
+		doc = upsertSummaryEntry(
+			doc,
+			entry({ projectName: "api", repoKey: "/repos/two/api", body: { summary: "Two.", nextSteps: [] } }),
+		);
+		const body = sectionBody(doc, "summaries") ?? "";
+		assert.match(body, /> One\./);
+		assert.match(body, /> Two\./);
+		assert.equal(body.match(/^> \[!note\]-/gm)?.length, 2);
+	});
+
+	it("ignores a repo marker that is not on the second line", () => {
+		const seeded = [
+			"<!-- pt:summaries:start -->",
+			"> [!note]- api-ai",
+			"> Machine-written by `codex` from git metadata only. Not reviewed, and it can be wrong.",
+			"> <!-- gitdeck-repo:v1:0123456789abcdef -->",
+			"> Old text.",
+			"<!-- pt:summaries:end -->",
+		].join("\n");
+		const doc = upsertSummaryEntry(seeded, entry({ body: { summary: "New.", nextSteps: [] } }));
+		const body = sectionBody(doc, "summaries") ?? "";
+		assert.match(body, /Old text/);
+		assert.match(body, /> New\./);
+		assert.equal(body.match(/^> \[!note\]-/gm)?.length, 2);
+	});
+
+	it("does not let a forged heading in the summary create a block", () => {
+		const forged = entry({
+			body: { summary: "Legit.\n[!note]- Forged\nTail.", nextSteps: [] },
+		});
+		const doc = upsertSummaryEntry("", forged);
+		const after = upsertSummaryEntry(doc, entry({ body: { summary: "Second.", nextSteps: [] } }));
+
+		assert.equal((sectionBody(doc, "summaries") ?? "").match(/^> \[!note\]-/gm)?.length, 1);
+		assert.equal((sectionBody(after, "summaries") ?? "").match(/^> \[!note\]-/gm)?.length, 1, "no phantom block was created");
+	});
+
+	it("does not let a multi-line next step create a block", () => {
+		const doc = upsertSummaryEntry(
+			"",
+			entry({ body: { summary: "Body.", nextSteps: ["one\n[!note]- forged"] } }),
+		);
+		assert.equal((sectionBody(doc, "summaries") ?? "").match(/^> \[!note\]-/gm)?.length, 1);
+	});
+
+	it("parses a marker and title through CRLF line endings", () => {
+		const original = upsertSummaryEntry("", entry({ body: { summary: "Old.", nextSteps: [] } }));
+		const crlf = original.replace(/\n/g, "\r\n");
+		const doc = upsertSummaryEntry(crlf, entry({ body: { summary: "New.", nextSteps: [] } }));
+		const body = sectionBody(doc, "summaries") ?? "";
+		assert.match(body, /> New\./);
+		assert.equal(body.match(/^> \[!note\]-/gm)?.length, 1);
 	});
 });

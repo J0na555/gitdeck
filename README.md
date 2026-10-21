@@ -3,8 +3,6 @@
 An Obsidian sidebar plugin that shows which local git projects you are actually
 working on, ranked, with one dashboard note in your vault.
 
-Desktop only. It shells out to `git`, so it does not work on mobile.
-
 ## What it does
 
 On refresh it scans a directory for git repositories and reads, per repo:
@@ -44,10 +42,25 @@ dormant projects".
 There is no LLM in the ranking. The score is arithmetic over git facts, so it is
 free, offline, and explainable.
 
+## Install
+
+From the community directory, once Gitdeck is published: Settings -> Community
+plugins -> Browse -> search Gitdeck -> Install -> Enable.
+
+To install manually, download `main.js`, `manifest.json`, and `styles.css` from
+the release. Put them in `<vault>/.obsidian/plugins/gitdeck/`, creating the
+folder if needed. Then enable Gitdeck in Settings -> Community plugins.
+
+## Compatibility
+
+Gitdeck is desktop only. It requires `git` on PATH and does not work on mobile.
+
 ## The dashboard note
 
-The plugin owns exactly one file: `Dashboard.md`, in the folder you pick in the
-settings. It has two sections, between these markers:
+Inside the vault, the plugin owns one dashboard note: `Dashboard.md`, in the
+folder you pick in the settings. When weekly notes are enabled, it also owns one
+note per ISO week under `Weekly/`. The dashboard note has two sections, between
+these markers:
 
 ```markdown
 <!-- pt:projects:start -->
@@ -98,7 +111,7 @@ subprocess is `git`, and nothing from your vault leaves the machine.
 
 ### Your own project notes
 
-The plugin does not create notes any more. It links to notes you already have,
+The plugin does not create per-project notes. It links to notes you already have,
 and picks between them in this order:
 
 1. A note whose frontmatter says `tracked: <project name>`. Explicit, and it
@@ -112,12 +125,15 @@ forms override it. Add `tracked: <project name>` to any note to say exactly
 what it belongs to, which is worth doing once per project rather than trusting
 filenames forever.
 
-### Upgrading from the per-project notes
+### Upgrading from earlier development builds
 
-v0.1 wrote one note per project plus a `<name>-ai.md` summary note for each project
-you generated a summary for. This version owns one dashboard note instead, and on
-your first scan it copies the AI summary text out of those `-ai` notes and into the
-summaries section.
+Earlier development builds wrote one note per project plus a `<name>-ai.md` summary
+note for each project you generated a summary for. This version owns one dashboard
+note instead, and on your first scan it copies the AI summary text out of those
+`-ai` notes and into the summaries section.
+
+This only affects installs that used those builds. A fresh 1.0.0 install has no
+per-project notes and nothing to upgrade.
 
 **Nothing is deleted.** The old notes stay exactly where they are, unreferenced by the
 plugin, and a notice tells you which folders they are in once you are happy with the
@@ -131,12 +147,80 @@ summaries are gone, which is the only way to lose them.
 
 Pin ranks, the previous scan's dirty counts and AI summary freshness are kept in
 the plugin's own `data.json` rather than in your notes, so editing `pinned` or
-`dirty` in a note has no effect on the panel. Nothing in your notes is read back
-except the `tracked` key above.
+`dirty` in a note has no effect on the panel. Outside the one-time legacy read
+described above, nothing in your notes is read back except the `tracked` key.
+
+## AI summaries
+
+AI summaries are optional. Gitdeck only generates one when you ask for it from a
+project row. Nothing is generated during a scan or on startup.
+
+### Network use
+
+Gitdeck makes no network requests itself. When you generate a summary or run a
+provider test, the selected CLI may contact its provider. The plugin includes no
+telemetry, ads, or self-update.
+
+### Provider CLIs
+
+The plugin runs one of these local command-line tools: `gemini`, `codex`, or
+`opencode`. It does not call a provider API itself and does not store API keys.
+The CLI handles authentication and its own network use.
+
+### What is sent
+
+The prompt contains the project name, the absolute local repository path, the
+remote URL, the current branch, the default branch, the last commit date, the
+uncommitted file count, the paths of the uncommitted files, and up to the
+configured number of recent commit subjects with their short hashes (default 20,
+range 1 to 200). It contains no file contents and no vault note contents.
+
+The CLI runs with the repository as its working directory. The prompt tells it not
+to read files, but the process can still read anything in that repository that
+your user account can read.
+
+### What you get back
+
+A summary is model output. Nothing reviews it, and it can be wrong. Gitdeck stores
+the text in the dashboard's summaries section and does not verify the claims in it.
+
+### Provider tests
+
+Gitdeck does not test a provider on startup. Opening the Gitdeck settings tab, in
+the AI summaries section, tests the provider CLIs when there is no fresh cached
+result and no manual provider. Retest runs the same test on demand, and a generation
+that fails rechecks the provider that failed when Auto is selected. A manual
+provider is never switched or rechecked automatically. A test is a real model
+call, so the first one may use quota or trigger an auth prompt.
+
+## Access outside the vault
+
+The scan root defaults to `~/Documents/projects`, and the repository paths it finds
+are outside the vault by design. The plugin reads git metadata there by running
+`git`.
+
+The optional editor command can launch an external editor with the repository path.
+
+## Local files
+
+Inside the vault, the plugin writes the dashboard note in the folder you choose,
+and optional `Weekly/<ISO-week>.md` files when weekly notes are enabled.
+
+In the plugin folder, it writes `data.json` for settings and machine state, plus
+`startup.log` and `errors.log`.
+
+The plugin reads `tracked` frontmatter from notes to link projects, and reads legacy
+note frontmatter once on upgrade. It does not send note contents.
+
+## Privacy
+
+Gitdeck has no client-side telemetry, no ads, and no self-update. Ranking and git
+scanning are local. The only network use is whatever the optional provider CLI
+does. No vault note contents are sent.
 
 ## Usage
 
-- Click the git-branch ribbon icon, or run "Gitdeck: Open Gitdeck".
+- Click the git-branch ribbon icon, or run "Gitdeck: Open panel".
 - "Gitdeck: Rescan projects" rescans without opening the panel.
 - Right-click a row to pin, unpin, reorder, or open the note.
 
@@ -149,6 +233,10 @@ except the `tracked` key above.
   `private/` if you publish your vault and would rather the dashboard stayed out
   of published builds.
 - **Show dormant projects**: toggle visibility of dormant projects.
+
+## Support
+
+Report bugs or ask questions at https://github.com/J0na555/Radar/issues.
 
 ## Build
 

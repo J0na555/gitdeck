@@ -16,8 +16,16 @@
  * No `obsidian` import, deliberately: `node --test` cannot load that package, so a module
  * that imports it is a module with no tests. Same rule as `pin-queue.ts`.
  */
+import { isProjectKey, projectKey } from "./identity.ts";
 import { detectStale } from "./summary.ts";
-import type { MachineState, RepoFacts, SummaryRecord, SummaryState } from "./types.ts";
+import type {
+	MachineState,
+	PluginSettings,
+	Project,
+	RepoFacts,
+	SummaryRecord,
+	SummaryState,
+} from "./types.ts";
 
 /**
  * Layout version of the persisted state.
@@ -91,9 +99,134 @@ export function needsLegacyImport(state: MachineState): boolean {
 	return !state.legacySummariesImported;
 }
 
-/** A project's pin rank. 0 means unpinned, which is also what an absent name means. */
-export function pinRankFor(pins: Readonly<Record<string, number>>, name: string): number {
-	return pins[name] ?? 0;
+/**
+ * True when a state map still holds at least one legacy basename key.
+ *
+ * The migration needs no version bump and no new "migrated" flag: an absolute path is the
+ * new shape, and a basename is the old one. If every key is an absolute path there is
+ * nothing left to move, so writing another boolean into data.json would only be a second
+ * place for the answer to be wrong.
+ */
+export function hasLegacyNameKeys(state: MachineState): boolean {
+	return (
+		Object.keys(state.pins).some((key) => !isProjectKey(key)) ||
+		Object.keys(state.previousDirty).some((key) => !isProjectKey(key)) ||
+		Object.keys(state.summaries).some((key) => !isProjectKey(key))
+	);
+}
+
+/** What one pass of the name-to-path migration did, and what it could not decide. */
+export interface MigrationResult {
+	state: MachineState;
+	/** Legacy names that were moved to their one evidence path. */
+	migrated: string[];
+	/** Names with more than one path, or a path with more than one owner. Left alone. */
+	ambiguous: string[];
+	/** Names with no note recording a path. Left alone. */
+	unmapped: string[];
+	/** True when any key was added or deleted. */
+	changed: boolean;
+}
+
+/**
+ * Move the old basename-keyed records onto project keys, using the notes as evidence.
+ *
+ * The only honest source for "which repo was this basename" is a legacy project note, which
+ * recorded `project` and `repo_path` together. The scan cannot answer it: three different
+ * `api` repos under the scan root are exactly the ambiguity this change exists to fix, and
+ * picking one of them would be a guess that silently moved somebody's pin to the wrong repo.
+ * So a name with no note, or with more than one note pointing at different paths, is left in
+ * place and reported. It is inert, and a person can decide what it meant.
+ *
+ * Relative paths are ignored rather than resolved against the process cwd. A note saying
+ * `repo_path: projects/api` does not say where the vault or the scan root was when it was
+ * written, and resolving it against wherever Obsidian happened to start would invent a path.
+ *
+ * Idempotent: a second pass sees only absolute keys and changes nothing. Path keys win over a
+ * name key that maps to them, because the path key could only have come from a newer write.
+ */
+export function migrateStateToPaths(state: MachineState, notes: readonly LegacyNoteState[]): MigrationResult {
+	const byName = new Map<string, Set<string>>();
+	for (const note of notes) {
+		const repoPath = note.repoPath?.trim() ?? "";
+		if (note.project === "" || repoPath === "" || !isProjectKey(repoPath)) continue;
+		const key = projectKey(repoPath);
+		const paths = byName.get(note.project) ?? new Set<string>();
+		paths.add(key);
+		byName.set(note.project, paths);
+	}
+
+	// The inverse, so a path claimed by two different names is caught before either is moved.
+	const byPath = new Map<string, Set<string>>();
+	for (const [name, keys] of byName) {
+		for (const key of keys) {
+			const owners = byPath.get(key) ?? new Set<string>();
+			owners.add(name);
+			byPath.set(key, owners);
+		}
+	}
+
+	const migrated = new Set<string>();
+	const ambiguous = new Set<string>();
+	const unmapped = new Set<string>();
+	let changed = false;
+
+	const move = <T>(records: Readonly<Record<string, T>>): Record<string, T> => {
+		const out: Record<string, T> = { ...records };
+		for (const name of Object.keys(records)) {
+			if (isProjectKey(name)) continue;
+
+			const paths = byName.get(name);
+			if (!paths || paths.size === 0) {
+				unmapped.add(name);
+				continue;
+			}
+			if (paths.size > 1) {
+				ambiguous.add(name);
+				continue;
+			}
+
+			const [key] = [...paths];
+			const owners = byPath.get(key);
+			if (owners && owners.size > 1) {
+				ambiguous.add(name);
+				continue;
+			}
+
+			// A path key that already exists is the winner. Copying over it would let old note
+			// state undo a write that was made after the notes were last read.
+			if (!(key in out)) out[key] = records[name];
+			delete out[name];
+			migrated.add(name);
+			changed = true;
+		}
+		return out;
+	};
+
+	const pins = move(state.pins);
+	const previousDirty = move(state.previousDirty);
+	const summaries = move(state.summaries);
+
+	return {
+		state: {
+			version: state.version,
+			pins,
+			previousDirty,
+			summaries,
+			legacySummariesImported: state.legacySummariesImported,
+		},
+		// Sets, then sorted, so the three maps reporting the same name do not produce three
+		// notices' worth of duplicates and the order is stable between runs.
+		migrated: [...migrated].sort(),
+		ambiguous: [...ambiguous].sort(),
+		unmapped: [...unmapped].sort(),
+		changed,
+	};
+}
+
+/** A project's pin rank. 0 means unpinned, which is also what an absent project key means. */
+export function pinRankFor(pins: Readonly<Record<string, number>>, key: string): number {
+	return pins[key] ?? 0;
 }
 
 /**
@@ -104,8 +237,8 @@ export function pinRankFor(pins: Readonly<Record<string, number>>, name: string)
  * and a repo with no recorded history has not been clean before: it has never been looked
  * at, which is not evidence of anything.
  */
-export function previousDirtyFor(counts: Readonly<Record<string, number>>, name: string): number | null {
-	return counts[name] ?? null;
+export function previousDirtyFor(counts: Readonly<Record<string, number>>, key: string): number | null {
+	return counts[key] ?? null;
 }
 
 /** What a summary was generated from, rebuilt into the state the panel renders. */
@@ -126,6 +259,41 @@ export function stateFromRecord(
 		stale,
 		staleReason: reason,
 	};
+}
+
+/**
+ * Rebuild every project's summary state from machine state, comparing each against the repo
+ * as it is now.
+ *
+ * Reads data.json, not notes. Freshness used to be the summary note's frontmatter, which put
+ * the answer to "is this out of date" in a file whose whole purpose was to hold the thing
+ * being judged. A project with no record is absent from the map, and the panel shows that as
+ * "none", which is the normal case: summaries are made on request.
+ *
+ * Keyed by `projectKey(facts.path)` rather than the display name, so two repos named `api`
+ * each get their own record. The lookup and the returned map use the same key on purpose:
+ * a caller that iterated the map and looked projects up by name would reintroduce the
+ * collision one layer above the state it just fixed.
+ *
+ * `head` is injected rather than called here so this stays a lookup and a comparison. The git
+ * call behind it is one `rev-parse` per project, the same one the old reader made.
+ */
+export function readSummaryStates(
+	settings: PluginSettings,
+	projects: Project[],
+	head: (facts: RepoFacts) => string | null,
+): Map<string, SummaryState> {
+	const states = new Map<string, SummaryState>();
+	const records = settings.state.summaries;
+
+	for (const project of projects) {
+		const key = projectKey(project.facts.path);
+		const record = records[key];
+		if (!record) continue;
+		states.set(key, stateFromRecord(record, project.facts, head(project.facts)));
+	}
+
+	return states;
 }
 
 /**
@@ -152,6 +320,11 @@ export interface LegacySummaryFrontmatter {
 export interface LegacyNoteState {
 	/** The project the note belonged to, or the filename when it had no `project` key. */
 	project: string;
+	/**
+	 * The exact repo path the old note recorded, used only to attribute name-keyed data
+	 * during migration. Trimmed, or absent when the note did not say.
+	 */
+	repoPath?: string;
 	/** `pinned` from the note, unvalidated. */
 	pinned?: unknown;
 	/** `dirty` from the note, unvalidated. */

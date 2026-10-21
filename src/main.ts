@@ -1,6 +1,6 @@
 import { homedir } from "os";
 import * as path from "path";
-import { App, Notice, Plugin, PluginSettingTab, Setting, TFile } from "obsidian";
+import { App, Notice, Plugin, PluginSettingTab, Setting } from "obsidian";
 import {
 	buildGitContext,
 	buildPrompt,
@@ -16,9 +16,11 @@ import { countCommitsSince, scanProjects } from "./git";
 import { openRepoFolder } from "./editor";
 import { healthSignals } from "./health";
 import { findLegacySummaryNotes, isLegacySummaryPath, legacyFolders, recordFromLegacyHeader } from "./legacy-notes";
+import { projectKey } from "./identity";
 import { ErrorLog } from "./log-writer";
 import { folderChoices } from "./folder-picker";
 import {
+	detectionNeedsProbe,
 	detectProvidersAsync,
 	isProviderId,
 	probeCapabilityAsync,
@@ -31,10 +33,13 @@ import {
 import {
 	applyLegacyNotes,
 	emptyMachineState,
+	hasLegacyNameKeys,
+	migrateStateToPaths,
 	needsLegacyImport,
 	needsLegacySeed,
 	pinRankFor,
 	previousDirtyFor,
+	readSummaryStates,
 	sanitizeMachineState,
 	STATE_VERSION,
 } from "./machine-state";
@@ -58,10 +63,9 @@ import {
 	listVaultFolders,
 	readLegacyNotes,
 	readNoteCandidates,
-	readSummaryStates,
 	syncDashboard,
 	syncWeekly,
-	writeDashboard,
+	updateDashboard,
 } from "./vault";
 import { weekStartKey, weeklyFolder } from "./week";
 import { WriteChain } from "./write-chain";
@@ -119,9 +123,6 @@ const EDITOR_COMMAND_EXAMPLES = ["code", "cursor", "nvim", "vim"];
  */
 const TERMINAL_EDITOR_EXAMPLE = "kitty --single-instance --directory";
 
-/** How old a cached probe pass may be before load re-probes, in days. */
-const DETECTION_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
-
 export default class GitdeckPlugin extends Plugin {
 	settings: PluginSettings = { ...DEFAULT_SETTINGS };
 	private projects: Project[] = [];
@@ -170,6 +171,19 @@ export default class GitdeckPlugin extends Plugin {
 	private readonly weeklyWrites = new WriteChain();
 
 	/**
+	 * Which project key a display name belongs to, when the notes settle it.
+	 *
+	 * A basename is ambiguous only while more than one repo has it. This map is rebuilt from
+	 * the legacy notes on every refresh so a summary import can attribute an old note to a
+	 * path, and so `generateSummary` knows whether an unmarked dashboard block is safe to
+	 * adopt. A name with two recorded paths maps to null, which is the "do not guess" answer.
+	 */
+	private summaryOwnership = new Map<string, string | null>();
+
+	/** True once the one ambiguous/unmapped migration notice has been shown. */
+	private keyMigrationWarned = false;
+
+	/**
 	 * Register everything the plugin adds to the workspace.
 	 *
 	 * Each step runs inside its own guard on purpose. A single throw used to abort the rest
@@ -201,10 +215,10 @@ export default class GitdeckPlugin extends Plugin {
 			});
 		});
 
-		this.guard(log, "addCommand:open-gitdeck", () => {
+		this.guard(log, "addCommand:open-panel", () => {
 			this.addCommand({
-				id: "open-gitdeck",
-				name: RIBBON_TITLE,
+				id: "open-panel",
+				name: "Open panel",
 				callback: () => void this.activateView(),
 			});
 		});
@@ -236,14 +250,6 @@ export default class GitdeckPlugin extends Plugin {
 
 		this.guard(log, "addSettingTab", () => {
 			this.addSettingTab(new GitdeckSettingTab(this.app, this));
-		});
-
-		// Probing spawns child processes, so it is not on onload's critical path: a stale cache
-		// is repaired by the retest button, by the command above, or by a generation failure,
-		// none of which need onload to have finished. A cached pass is reused as-is; only a
-		// missing or old one is re-run.
-		this.guard(log, "ensureDetection", () => {
-			if (this.detectionIsStale()) void this.retestProviders(false);
 		});
 
 		log.finish();
@@ -314,41 +320,33 @@ export default class GitdeckPlugin extends Plugin {
 	/**
 	 * Add one project's summary to the dashboard, leaving the others untouched.
 	 *
-	 * Read-modify-write rather than a write, and that is the whole risk in this function. The
-	 * previous version replaced one file per project, so a failed write cost one summary. Here
-	 * the dashboard is the only copy of every summary, so a read that misses what is on disk
-	 * loses all of them.
+	 * The splice runs inside `vault.process`, on the fresh contents, so a user edit outside the
+	 * summaries section between the read and the write survives. That matters more here than
+	 * anywhere else: the dashboard is the only copy of every summary, so a read that misses what
+	 * is on disk loses all of them.
 	 *
-	 * The whole read-splice-write goes through the dashboard chain, not just the write. A scan
-	 * writing the project table at the same moment as a generation writing a summary would
-	 * otherwise both read the same version and the second write would drop the first change,
-	 * which for a summary means deleting it. Serialising the read is what makes the second
-	 * writer see the first.
+	 * The whole update goes through the dashboard chain, not just the write. A scan writing the
+	 * project table at the same moment as a generation writing a summary would otherwise both
+	 * read the same version and the second write would drop the first change, which for a
+	 * summary means deleting it. Serialising the read is what makes the second writer see the
+	 * first.
 	 */
-	private async upsertSummary(target: string, entry: SummaryEntry): Promise<string | null> {
+	private async upsertSummary(
+		entry: SummaryEntry,
+		options: { canAdoptUnmarked?: boolean } = {},
+	): Promise<string | null> {
 		return this.dashboardWrites.run(async () => {
-			const file = this.app.vault.getAbstractFileByPath(target);
-			if (!(file instanceof TFile)) {
-				// No dashboard yet. The next scan creates one, and the summary that asked for this
-				// is lost rather than reported as saved. Creating one here would mean rendering a
-				// project table for a scan that has not happened.
-				return null;
-			}
-			let doc: string;
-			try {
-				doc = await this.app.vault.read(file);
-			} catch {
-				return null;
-			}
-			let content: string;
-			try {
-				content = upsertSummaryEntry(doc, entry);
-			} catch {
-				// A generated body carrying a marker would break the section structure. The
-				// write is refused rather than corrupting the note.
-				return null;
-			}
-			return writeDashboard(this.app, this.settings, content, doc);
+			const target = dashboardPath(this.settings);
+			// No dashboard yet means refusing rather than creating. The next scan creates one, and
+			// the summary that asked for this is lost rather than reported as saved. Creating one
+			// here would mean rendering a project table for a scan that has not happened.
+			const outcome = await updateDashboard(
+				this.app,
+				this.settings,
+				(doc) => upsertSummaryEntry(doc, entry, options),
+				{ missing: "refuse" },
+			);
+			return outcome.status === "written" || outcome.status === "unchanged" ? target : null;
 		});
 	}
 
@@ -400,18 +398,36 @@ export default class GitdeckPlugin extends Plugin {
 
 		let imported = 0;
 		for (const note of legacy) {
+			// The note's own `repo_path` is the strongest evidence, because the summary was
+			// written for that exact repo. Only when it is absent or relative does the project
+			// note's recorded path stand in, and only when that name has exactly one.
+			const recorded = note.header.repoPath;
+			const repoKey =
+				(recorded !== null && path.isAbsolute(recorded) ? projectKey(recorded) : null) ??
+				this.summaryOwnership.get(note.projectName) ??
+				null;
+			// Two `api` notes and no way to tell them apart means neither is imported. Guessing
+			// would put one repo's text under the other's name, which is the bug this change
+			// exists to fix. The old note stays on disk and the notice counts it as left alone.
+			if (repoKey === null) continue;
+
 			const entry: SummaryEntry = {
 				projectName: note.projectName,
+				repoKey,
 				provider: note.header.provider ?? "an unknown CLI",
 				record: recordFromLegacyHeader(note.header),
 				body: note.body,
 			};
+			const canAdoptUnmarked = this.summaryOwnership.get(note.projectName) === repoKey;
 			// One call per project rather than one batched write: each is a read-modify-write of the
 			// only copy of every summary, and a failure has to be attributable to one project rather
 			// than taking the other 44 with it.
-			if (await this.upsertSummary(dashboardPath(this.settings), entry)) imported++;
+			if (await this.upsertSummary(entry, { canAdoptUnmarked })) imported++;
 		}
 
+		// Set after one complete pass even when notes were skipped. The flag exists to stop a
+		// retry replacing a newer summary with old text; an ambiguous note left on disk can be
+		// imported by hand, but a second automatic pass could overwrite what the user regenerated.
 		this.settings.state.legacySummariesImported = true;
 		await this.saveSettings();
 
@@ -430,14 +446,6 @@ export default class GitdeckPlugin extends Plugin {
 				0,
 			);
 		}
-	}
-
-	/** True when there is no usable cache, so a probe pass is due. */
-	private detectionIsStale(): boolean {
-		if (this.settings.provider !== null) return false;
-		const { checkedAt, probes } = this.settings.detection;
-		if (checkedAt === 0 || probes.length === 0) return true;
-		return Date.now() - checkedAt > DETECTION_MAX_AGE_MS;
 	}
 
 	/**
@@ -528,19 +536,22 @@ export default class GitdeckPlugin extends Plugin {
 	 * left on screen.
 	 */
 	async savePin(project: Project): Promise<boolean> {
+		// Keyed by path so pinning one `api` cannot move another. The Notice keeps the display
+		// name, because that is what the user sees on the row.
+		const key = projectKey(project.facts.path);
 		const name = project.facts.name;
-		const had = name in this.settings.state.pins;
-		const before = this.settings.state.pins[name];
+		const had = key in this.settings.state.pins;
+		const before = this.settings.state.pins[key];
 
-		if (project.pin > 0) this.settings.state.pins[name] = project.pin;
-		else delete this.settings.state.pins[name];
+		if (project.pin > 0) this.settings.state.pins[key] = project.pin;
+		else delete this.settings.state.pins[key];
 
 		try {
 			await this.saveSettings();
 			return true;
 		} catch (error) {
-			if (had) this.settings.state.pins[name] = before;
-			else delete this.settings.state.pins[name];
+			if (had) this.settings.state.pins[key] = before;
+			else delete this.settings.state.pins[key];
 			new Notice(`Gitdeck: could not save the pin for ${name} (${String(error)}).`);
 			return false;
 		}
@@ -558,28 +569,77 @@ export default class GitdeckPlugin extends Plugin {
 	 * which is what `refresh` has to wait on.
 	 */
 	queuePinWrite(project: Project, target: () => number, write: (pin: number) => Promise<void>): Promise<void> {
-		return this.pinWrites.queue(project.facts.name, () => write(target()));
+		return this.pinWrites.queue(projectKey(project.facts.path), () => write(target()));
 	}
 
 	/**
-	 * Move the note-derived state into data.json, once, for an install that has notes.
+	 * Move the note-derived state into data.json, and move name keys onto project keys.
 	 *
-	 * An install upgrading today has real pin ranks and real dirty counts sitting in 45 notes'
-	 * frontmatter, and this is the only moment anything can read them. Skipping it would reset
-	 * every pin in every install, silently, on first load, which is the worst outcome this
-	 * change has available to it. So it runs before anything reads state, and the version that
-	 * stops it running again is written in the same breath: a save that fails leaves the
-	 * version unwritten and the seed runs again next time, which only fills gaps.
+	 * Two jobs on one read of the notes. The seed is the upgrade from note frontmatter, and an
+	 * install upgrading today has real pin ranks and real dirty counts sitting in 45 notes:
+	 * skipping it would reset every pin, silently, on first load. The migration is the upgrade
+	 * from basename keys to path keys, and the same notes carry `repo_path`, which is the only
+	 * evidence that says which `api` a name meant.
+	 *
+	 * The seed waits for the metadata cache. A cold cache makes every note look empty, and
+	 * writing `version = STATE_VERSION` after that would mark the work done without reading a
+	 * single pin. The migration has no such gate: an unmapped name is left in place, so a cold
+	 * read can postpone an entry but cannot lose it.
+	 *
+	 * One save for both. A failed save throws to the caller like the old seed did, so the next
+	 * refresh retries the whole step rather than advertising a success that never landed.
 	 */
-	private async seedStateFromLegacyNotes(): Promise<void> {
-		if (!needsLegacySeed(this.settings.state)) return;
+	private async migrateLegacyState(): Promise<void> {
+		const { notes, pending } = readLegacyNotes(this.app, this.settings);
 
-		const legacy = readLegacyNotes(this.app, this.settings);
-		this.settings.state = {
-			...applyLegacyNotes(this.settings.state, legacy),
-			version: STATE_VERSION,
-		};
-		await this.saveSettings();
+		// Rebuilt every refresh, not remembered from the last one: the notes are the evidence,
+		// and a note edited, added or moved since the last scan changes which name is unambiguous.
+		const evidence = new Map<string, Set<string>>();
+		for (const note of notes) {
+			const repoPath = note.repoPath ?? "";
+			if (note.project === "" || repoPath === "" || !path.isAbsolute(repoPath)) continue;
+			const key = projectKey(repoPath);
+			const keys = evidence.get(note.project) ?? new Set<string>();
+			keys.add(key);
+			evidence.set(note.project, keys);
+		}
+		this.summaryOwnership = new Map();
+		for (const [name, keys] of evidence) {
+			// One path is an answer; two are the ambiguity this whole change is about. Null
+			// means "do not adopt an unmarked block for this name", which is the safe side.
+			this.summaryOwnership.set(name, keys.size === 1 ? [...keys][0] : null);
+		}
+
+		let next = this.settings.state;
+		let changed = false;
+
+		if (needsLegacySeed(next) && pending === 0) {
+			next = { ...applyLegacyNotes(next, notes), version: STATE_VERSION };
+			changed = true;
+		}
+
+		// Recomputed after the seed: a state that was seeded just now has name keys it did not
+		// have a moment ago, and a check made before the seed would skip the migration it needs.
+		if (hasLegacyNameKeys(next)) {
+			const result = migrateStateToPaths(next, notes);
+			next = result.state;
+			if (result.changed) changed = true;
+
+			if ((result.ambiguous.length > 0 || result.unmapped.length > 0) && !this.keyMigrationWarned) {
+				const parts: string[] = [];
+				if (result.ambiguous.length > 0) parts.push(`${result.ambiguous.length} ambiguous`);
+				if (result.unmapped.length > 0) parts.push(`${result.unmapped.length} with no note`);
+				const total = result.ambiguous.length + result.unmapped.length;
+				new Notice(
+					`Gitdeck: ${parts.join(" and ")} name-keyed state ${total === 1 ? "entry was" : "entries were"} left in data.json because no single repo path could be found.`,
+					0,
+				);
+				this.keyMigrationWarned = true;
+			}
+		}
+
+		this.settings.state = next;
+		if (changed) await this.saveSettings();
 	}
 
 	/**
@@ -599,18 +659,25 @@ export default class GitdeckPlugin extends Plugin {
 	 */
 	async refresh(): Promise<Project[]> {
 		await this.pinWrites.settle();
-		await this.seedStateFromLegacyNotes();
+		// Captured before the migration and the scan, so a settings change that lands while
+		// either is running cannot make the two halves of one refresh read different roots.
+		const root = this.settings.scanRoot;
+		await this.migrateLegacyState();
 
-		const facts = scanProjects(this.settings.scanRoot);
+		const facts = scanProjects(root);
 		const now = Date.now();
 		const { pins, previousDirty } = this.settings.state;
 
-		this.projects = facts.map((fact: RepoFacts) => ({
-			facts: fact,
-			score: scoreRepo(fact, now, this.settings.weights),
-			pin: pinRankFor(pins, fact.name),
-			health: healthSignals(fact, previousDirtyFor(previousDirty, fact.name), now),
-		}));
+		this.projects = facts.map((fact: RepoFacts) => {
+			// The key is the identity. The name is only what the row prints.
+			const key = projectKey(fact.path);
+			return {
+				facts: fact,
+				score: scoreRepo(fact, now, this.settings.weights),
+				pin: pinRankFor(pins, key),
+				health: healthSignals(fact, previousDirtyFor(previousDirty, key), now),
+			};
+		});
 
 		// Match against the notes that are already there rather than writing any. The plugin
 		// stopped creating notes, so this decides which of somebody's existing notes each project
@@ -661,7 +728,7 @@ export default class GitdeckPlugin extends Plugin {
 			(project) => headSha(project.path),
 		);
 		for (const project of this.projects) {
-			const state = states.get(project.facts.name);
+			const state = states.get(projectKey(project.facts.path));
 			if (state) project.summary = state;
 			else delete project.summary;
 		}
@@ -682,7 +749,7 @@ export default class GitdeckPlugin extends Plugin {
 	private async saveScanState(): Promise<void> {
 		const previousDirty = { ...this.settings.state.previousDirty };
 		for (const project of this.projects) {
-			if (project.facts.gitReadable) previousDirty[project.facts.name] = project.facts.dirtyCount;
+			if (project.facts.gitReadable) previousDirty[projectKey(project.facts.path)] = project.facts.dirtyCount;
 		}
 		this.settings.state.previousDirty = previousDirty;
 		await this.saveSettings();
@@ -729,8 +796,13 @@ export default class GitdeckPlugin extends Plugin {
 	 * Notice, records to `errors.log`, and writes nothing.
 	 */
 	async generateSummary(project: Project): Promise<SummaryState | null> {
+		const key = projectKey(project.facts.path);
 		const name = project.facts.name;
 		const existed = Boolean(project.summary);
+		// Adoption is only safe when the notes say this display name belongs to this exact repo.
+		// With two `api` repos, an unmarked `api` block is ambiguous and appending is the honest
+		// answer: the old block stays where it is instead of being claimed by the wrong project.
+		const canAdoptUnmarked = this.summaryOwnership.get(name) === key;
 
 		const provider = this.currentProvider();
 		if (provider === null) {
@@ -764,12 +836,16 @@ export default class GitdeckPlugin extends Plugin {
 		// therefore a read, a splice and a write, and the read has to see what is already there:
 		// this dashboard is the only copy of every other project's summary, and a generation for
 		// one project must not take the other 44 with it.
-		const written = await this.upsertSummary(target, {
-			projectName: name,
-			provider,
-			record: { generatedAt: stamp.generatedAt, commit: stamp.commit, dirtyCount: stamp.dirtyCount },
-			body: result.summary,
-		});
+		const written = await this.upsertSummary(
+			{
+				projectName: name,
+				repoKey: key,
+				provider,
+				record: { generatedAt: stamp.generatedAt, commit: stamp.commit, dirtyCount: stamp.dirtyCount },
+				body: result.summary,
+			},
+			{ canAdoptUnmarked },
+		);
 		if (!written) {
 			return this.fail(name, provider, `could not write ${target}. Check the vault is writable.`);
 		}
@@ -783,7 +859,7 @@ export default class GitdeckPlugin extends Plugin {
 			commit: stamp.commit,
 			dirtyCount: stamp.dirtyCount,
 		};
-		this.settings.state.summaries[name] = record;
+		this.settings.state.summaries[key] = record;
 		// Persisted before anything reports success. If this fails the note is still written and
 		// the panel will call the project un-summarised until the next generation, which is worse
 		// than saying so. It must not go through `fail`, which claims no summary was written.
@@ -897,6 +973,16 @@ function detailFor(id: ProviderId, probe: ProviderProbe | undefined): string {
 }
 
 class GitdeckSettingTab extends PluginSettingTab {
+	/**
+	 * True while a probe pass started from this tab is in flight for this open.
+	 *
+	 * Both the automatic pass on open and the Retest button set it before probing. The
+	 * re-renders that follow check it for two things: a render must not start a second
+	 * pass while one is running, and a pass that settles after `hide()` must not rebuild
+	 * the hidden tab. `hide()` clears it so reopening the tab can probe again.
+	 */
+	private probingOnOpen = false;
+
 	constructor(
 		app: App,
 		private readonly plugin: GitdeckPlugin,
@@ -904,11 +990,13 @@ class GitdeckSettingTab extends PluginSettingTab {
 		super(app, plugin);
 	}
 
+	override hide(): void {
+		this.probingOnOpen = false;
+	}
+
 	display(): void {
 		const { containerEl } = this;
 		containerEl.empty();
-
-		containerEl.createEl("h2", { text: "Gitdeck" });
 
 		new Setting(containerEl)
 			.setName("Scan root")
@@ -975,7 +1063,7 @@ class GitdeckSettingTab extends PluginSettingTab {
 				}),
 			);
 
-		containerEl.createEl("h3", { text: "AI summaries" });
+		new Setting(containerEl).setName("AI summaries").setHeading();
 
 		const manual = this.plugin.settings.provider;
 		const active = this.plugin.currentProvider();
@@ -1011,10 +1099,11 @@ class GitdeckSettingTab extends PluginSettingTab {
 					.onClick(async () => {
 						button.setDisabled(true);
 						button.setButtonText("Retesting…");
+						this.probingOnOpen = true;
 						try {
 							await this.plugin.retestProviders();
 						} finally {
-							this.display();
+							if (this.probingOnOpen) this.display();
 						}
 					}),
 			);
@@ -1023,12 +1112,18 @@ class GitdeckSettingTab extends PluginSettingTab {
 		// purpose. Version alone is what produced the trap: gemini passes `--version` with
 		// exit 0 on a machine where it cannot authenticate, so a settings tab reporting
 		// only the version reads as fine right up until a summary fails.
+		// "never" was a claim that a test had run and produced nothing. On a fresh install
+		// nothing has been tested, so say that instead of dressing the absence up as a
+		// failed result, and do not mark it bad for the lack of a test.
+		const neverProbed = checkedAt === 0;
+		const probedAt = neverProbed ? "" : new Date(checkedAt).toLocaleString();
+		const choice = active ?? (neverProbed ? "nothing yet" : "nothing, no CLI answered");
+		const manualNote = manual ? ` ${manual} is your manual choice.` : "";
 		const detectionNote = containerEl.createDiv({ cls: "gd-probe" });
-		const probedAt = checkedAt === 0 ? "never" : new Date(checkedAt).toLocaleString();
 		detectionNote.setText(
-			`Test calls last run ${probedAt}. Using: ${active ?? "nothing, no CLI answered"}. ${manual ? `${manual} is your manual choice.` : ""}`,
+			`${neverProbed ? "No provider has been tested yet" : `Test calls last run ${probedAt}`}. Using: ${choice}.${manualNote}`,
 		);
-		detectionNote.toggleClass("is-bad", active === null);
+		detectionNote.toggleClass("is-bad", !neverProbed && active === null);
 
 		for (const id of PROVIDER_IDS) {
 			const probe = probes.find((entry) => entry.provider === id);
@@ -1075,7 +1170,7 @@ class GitdeckSettingTab extends PluginSettingTab {
 				});
 			});
 
-		containerEl.createEl("h3", { text: "Opening a project" });
+		new Setting(containerEl).setName("Opening a project").setHeading();
 
 		new Setting(containerEl)
 			.setName("Editor command")
@@ -1092,7 +1187,7 @@ class GitdeckSettingTab extends PluginSettingTab {
 					}),
 			);
 
-		containerEl.createEl("h3", { text: "Score weights" });
+		new Setting(containerEl).setName("Score weights").setHeading();
 
 		const weightNote = containerEl.createDiv({ cls: "gd-weight-note" });
 		weightNote.setText(
@@ -1100,5 +1195,24 @@ class GitdeckSettingTab extends PluginSettingTab {
 		);
 
 		renderWeightSettings(containerEl, this.plugin.settings, () => this.plugin.saveSettings());
+
+		// Opening this tab is the user's opt-in to probe, so a missing or stale cache is
+		// repaired here rather than on load. `probingOnOpen` covers the whole pass: it stops
+		// the re-render from starting another, and it is checked again before the render so
+		// a pass that settles after `hide()` does not rebuild the hidden tab. A manual
+		// choice or a fresh cache means nothing is due at all.
+		if (
+			!this.probingOnOpen &&
+			detectionNeedsProbe(this.plugin.settings.provider, this.plugin.settings.detection)
+		) {
+			this.probingOnOpen = true;
+			void (async () => {
+				try {
+					await this.plugin.retestProviders(false);
+				} finally {
+					if (this.probingOnOpen) this.display();
+				}
+			})();
+		}
 	}
 }

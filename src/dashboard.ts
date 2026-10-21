@@ -13,6 +13,7 @@
  */
 import { normalizePath } from "./obsidian-compat.ts";
 import { cell, linkCell } from "./format.ts";
+import { repoMarkerKey } from "./identity.ts";
 import { replaceSection, sectionBody } from "./markers.ts";
 import { rankProjects } from "./rank.ts";
 import type { SummaryBody } from "./summary.ts";
@@ -125,29 +126,56 @@ export function renderProjectsSection(projects: readonly Project[], now: number)
  * Every line is prefixed, blank lines included, or the callout ends at the first one and the rest
  * of the summary leaks into the document below it.
  *
+ * The second line is the repo marker. It is what `upsertSummaryEntry` matches on, so two repos
+ * with the same basename cannot share or overwrite each other's block. It is a digest rather
+ * than the path itself: a path can contain `--` or `>`, either of which would end the HTML
+ * comment or the callout. The marker is inside the fold for the same reason the warning is: a
+ * collapsed callout should not open with machine plumbing.
+ *
  * The machine-written line is inside the fold rather than above the section because a collapsed
  * callout is a collapsed callout: someone who opens this note should not have to read 45
  * identical warnings to find the one thing they came for, and someone who opens one summary
  * should see what it is before reading it.
  */
 export function renderSummaryEntry(entry: SummaryEntry): string {
+	// A newline in the display name would end the heading line and the marker line would no
+	// longer be second, which is the one place the parser looks for it.
+	const projectName = entry.projectName.replace(/[\r\n]+/g, " ");
 	const lines: string[] = [];
-	lines.push(`> [!note]- ${entry.projectName}`);
+	lines.push(`> [!note]- ${projectName}`);
+	lines.push(`> <!-- gitdeck-repo:v1:${repoMarkerKey(entry.repoKey)} -->`);
 	lines.push(`> Machine-written by \`${entry.provider}\` from git metadata only. Not reviewed, and it can be wrong.`);
 	lines.push(`> ${provenanceLine(entry.record)}`);
 	lines.push(QUOTE_BLANK);
 	lines.push("> **Summary**");
 	lines.push(QUOTE_BLANK);
-	for (const line of entry.body.summary.split("\n")) lines.push(quote(line));
+	for (const line of entry.body.summary.split("\n")) lines.push(quote(escapeCallout(line)));
 	if (entry.body.nextSteps.length > 0) {
 		lines.push(QUOTE_BLANK);
 		lines.push("> **Suggested next steps**");
 		lines.push(QUOTE_BLANK);
 		lines.push("> Proposed by the model, not a to-do list you agreed to.");
 		lines.push(QUOTE_BLANK);
-		for (const step of entry.body.nextSteps) lines.push(quote(`- ${step}`));
+		// One quoted line per source line. A step containing a newline would otherwise start a
+		// new line with `> ` and could forge a callout heading, which `splitSummaryEntries`
+		// would read as a second project's block.
+		for (const step of entry.body.nextSteps) {
+			for (const line of step.split(/\r?\n/)) lines.push(quote(`- ${line}`));
+		}
 	}
 	return lines.join("\n");
+}
+
+/**
+ * Stop a summary line from opening a callout.
+ *
+ * `splitSummaryEntries` treats any line matching a callout heading as the start of a new
+ * block, and model output is untrusted text. Escaping the `[` is enough to keep the line
+ * inside this callout while leaving the words visible, and a backslash before a bracket is
+ * inert markdown rather than a character the reader sees.
+ */
+function escapeCallout(line: string): string {
+	return /^\s*\[![a-z-]+\]-/i.test(line) ? `\\${line}` : line;
 }
 
 /**
@@ -168,6 +196,8 @@ function quote(line: string): string {
 /** One project's summary, ready to render. */
 export interface SummaryEntry {
 	projectName: string;
+	/** The resolved project key this block belongs to. Never the display name. */
+	repoKey: string;
 	provider: string;
 	/** What it was generated from. Null only for a summary with nothing recorded about it. */
 	record: SummaryRecord | null;
@@ -183,29 +213,45 @@ export interface SummaryEntry {
  * summary in data.json and treating the note as a view, which is the arrangement this change
  * moved away from.
  *
- * Entries are found by their callout heading. That is a format contract rather than a marker
- * contract, so it is worth being explicit about the cost: it works because the only writer of
- * this format is `renderSummaryEntry`, and the tests check that what it writes is what this
- * reads back. Per-project markers would be sturdier and would put a project name inside an HTML
- * comment, where a name containing `--` would stop being a comment at all.
+ * Entries are found by the repo marker on the second line, not by the heading. A heading is a
+ * display name, and two repos named `api` have the same one: matching on it meant generating a
+ * summary for one repo replaced the other's text. A block marked for a different key is never
+ * replaced, even when the title matches. That case is a moved repo or two directories with one
+ * name, and appending leaves the old text intact for a person to sort out.
+ *
+ * `canAdoptUnmarked` is for blocks written before markers existed. Adoption is allowed only
+ * when exactly one unmarked block has this display name, because two unmarked `api` blocks are
+ * the ambiguity the marker was added to resolve, and picking one would be a guess.
  */
-export function upsertSummaryEntry(doc: string, entry: SummaryEntry): string {
+export function upsertSummaryEntry(
+	doc: string,
+	entry: SummaryEntry,
+	options: { canAdoptUnmarked?: boolean } = {},
+): string {
 	const existing = sectionBody(doc, "summaries");
 	const blocks = existing === null ? [] : splitSummaryEntries(existing);
 	const rendered = renderSummaryEntry(entry);
+	const marker = repoMarkerKey(entry.repoKey);
 
-	// Matched on the title inside the heading, which is the project name. Comparing whole
-	// heading lines looked equivalent and was not: `calloutTitle` returns the name without the
-	// `> [!note]- ` prefix, so every lookup missed and every generation appended a second copy.
-	const index = blocks.findIndex((block) => block.title === entry.projectName);
-	if (index === -1) blocks.push({ title: entry.projectName, lines: rendered.split("\n") });
-	else blocks[index].lines = rendered.split("\n");
+	let index = blocks.findIndex((block) => block.key === marker);
+	if (index === -1 && options.canAdoptUnmarked) {
+		const unmarked = blocks.filter((block) => block.key === null && block.title === entry.projectName);
+		if (unmarked.length === 1) index = blocks.indexOf(unmarked[0]);
+	}
+
+	if (index === -1) {
+		blocks.push({ key: marker, title: entry.projectName, lines: rendered.split("\n") });
+	} else {
+		blocks[index] = { key: marker, title: entry.projectName, lines: rendered.split("\n") };
+	}
 
 	return replaceSection(doc, "summaries", blocks.map((block) => block.lines.join("\n")).join("\n\n"));
 }
 
-/** One parsed callout: the project name in its heading, and the lines under it. */
+/** One parsed callout: the marker and title in its first two lines, and the lines under them. */
 interface SummaryBlock {
+	/** The repo marker digest, or null for a block written before markers existed. */
+	key: string | null;
 	title: string;
 	lines: string[];
 }
@@ -223,12 +269,25 @@ function splitSummaryEntries(body: string): SummaryBlock[] {
 	for (const line of body.split("\n")) {
 		const title = calloutTitle(line);
 		if (title !== null) {
-			blocks.push({ title, lines: [line] });
+			blocks.push({ key: null, title, lines: [line] });
 			continue;
 		}
 		if (blocks.length > 0) blocks[blocks.length - 1].lines.push(line);
 	}
-	return blocks;
+	return blocks.map((block) => ({ ...block, key: repoKeyFromLines(block.lines) }));
+}
+
+/**
+ * The repo marker on a block's second line, or null when it is absent or malformed.
+ *
+ * Only the second line, deliberately. The summary body is model output, and a line that looked
+ * like a marker further down must not be able to claim the block.
+ */
+function repoKeyFromLines(lines: readonly string[]): string | null {
+	const second = lines[1]?.trim();
+	if (second === undefined) return null;
+	const match = /^> <!-- gitdeck-repo:v1:([0-9a-f]{16}) -->$/.exec(second);
+	return match ? match[1] : null;
 }
 
 /** The project name in a callout heading line, or null when this line is not one. */

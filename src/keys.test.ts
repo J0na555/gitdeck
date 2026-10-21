@@ -199,7 +199,7 @@ describe("surviving a rebuild", () => {
 		assert.equal(reconcileSelection(NO_SELECTION, [], null), NO_SELECTION);
 	});
 
-	it("re-selects by name even after a summary finished and re-rendered", () => {
+	it("re-selects by project key even after a summary finished and re-rendered", () => {
 		// A summary changes a row's buttons and nothing else, but the list is rebuilt
 		// from the ranked scan, so this is the same code path as a pin.
 		const rerendered = ["busy", "calm", "pinned-one", "sleepy"];
