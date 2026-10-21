@@ -14,7 +14,7 @@
  */
 import { describeGroup, explainGroup } from "./filter.ts";
 import type { FilterResult } from "./filter.ts";
-import { projectKey } from "./identity.ts";
+import { duplicateNameQualifiers, projectKey } from "./identity.ts";
 import { createProjectRow } from "./row-controls.ts";
 import type { Project } from "./types.ts";
 
@@ -53,6 +53,9 @@ export function drawPanelBody(
 ): HTMLElement[] {
 	body.empty();
 	const rowEls: HTMLElement[] = [];
+	// Keyed by visible rows, not every project: a duplicate only needs a qualifier when both
+	// rows can be seen at the same time.
+	const qualifiers = duplicateNameQualifiers(result.rows.map((row) => row.project.facts));
 
 	for (const group of result.groups) {
 		const heading = doc.createElement("div");
@@ -68,7 +71,7 @@ export function drawPanelBody(
 		body.appendChild(heading);
 
 		for (const row of group.rows) {
-			rowEls.push(drawRow(doc, body, rowEls.length, row, options));
+			rowEls.push(drawRow(doc, body, rowEls.length, row, options, qualifiers));
 		}
 	}
 	return rowEls;
@@ -80,6 +83,7 @@ function drawRow(
 	index: number,
 	row: FilterResult["rows"][number],
 	options: PanelBodyOptions,
+	qualifiers: ReadonlyMap<string, string>,
 ): HTMLElement {
 	const { project } = row;
 	const el = createProjectRow(doc, {
@@ -87,6 +91,7 @@ function drawRow(
 		pinned: project.pin > 0,
 		selected: index === options.selectedIndex,
 		weak: row.weak,
+		qualifier: qualifiers.get(projectKey(project.facts.path)),
 		explainScores: options.explainScores,
 		editorLabel: options.editorLabel(project),
 		now: options.now,

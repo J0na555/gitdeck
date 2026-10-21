@@ -69,3 +69,45 @@ export function repoMarkerKey(key: string): string {
 export function isProjectKey(value: string): boolean {
 	return path.isAbsolute(value);
 }
+
+/** The parts of a project the panel needs to tell two same-named repos apart. */
+export interface NamedProjectPath {
+	name: string;
+	path: string;
+	root: string;
+}
+
+/**
+ * A parent-folder label for every project whose display name is shared by another visible row.
+ *
+ * Two repos called `api` are two rows with the same words in them, and the panel keys pins and
+ * summaries by path, so the rows are genuinely different. Showing only the basename makes them
+ * look identical and sends the user to the wrong one. The qualifier is the parent path relative
+ * to the scan root, which is the shortest label that tells those two apart in the common case.
+ *
+ * A project with a unique name gets no entry, so the ordinary panel looks unchanged.
+ */
+export function duplicateNameQualifiers(
+	projects: readonly NamedProjectPath[],
+): Map<string, string> {
+	const counts = new Map<string, number>();
+	for (const project of projects) {
+		counts.set(project.name, (counts.get(project.name) ?? 0) + 1);
+	}
+
+	const qualifiers = new Map<string, string>();
+	for (const project of projects) {
+		if ((counts.get(project.name) ?? 0) < 2) continue;
+		qualifiers.set(projectKey(project.path), parentLabel(project));
+	}
+	return qualifiers;
+}
+
+/** The parent folder, relative to the scan root when it is underneath it. */
+function parentLabel(project: NamedProjectPath): string {
+	const parent = path.dirname(path.resolve(project.path));
+	const root = path.resolve(project.root);
+	const relative = path.relative(root, parent);
+	const usable = relative !== "" && !relative.startsWith("..") && !path.isAbsolute(relative);
+	return (usable ? relative : path.basename(parent)).split(path.sep).join("/");
+}

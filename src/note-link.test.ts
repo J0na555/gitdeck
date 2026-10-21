@@ -3,8 +3,13 @@ import { describe, it } from "node:test";
 import { compareCandidates, resolveProjectNote } from "./note-link.ts";
 import type { NoteCandidate } from "./note-link.ts";
 
-function note(path: string, tracked = false, tracks: string | null = null): NoteCandidate {
-	return { path, basename: path.split("/").pop()!.replace(/\.md$/, ""), tracked, tracks };
+function note(
+	path: string,
+	tracked = false,
+	tracks: string | null = null,
+	repoPath: string | null = null,
+): NoteCandidate {
+	return { path, basename: path.split("/").pop()!.replace(/\.md$/, ""), tracked, tracks, repoPath };
 }
 
 describe("resolveProjectNote", () => {
@@ -72,6 +77,45 @@ describe("resolveProjectNote", () => {
 	it("matches through the same sanitising a generated note used to go through", () => {
 		// `foo/bar` became `foo-bar.md`, so that is the note that has to match.
 		assert.equal(resolveProjectNote("foo/bar", [note("Notes/foo-bar.md")])?.path, "Notes/foo-bar.md");
+	});
+
+	it("matches a note by its recorded repository path before the basename", () => {
+		// Two repos called `api`. The note with `repo_path` names one of them; the other note
+		// only shares the filename, so the path binding wins.
+		const candidates = [
+			note("Notes/api.md"),
+			note("Projects/client-a.md", false, null, "/home/me/projects/client-a/api"),
+		];
+		assert.equal(
+			resolveProjectNote("api", candidates, "/home/me/projects/client-a/api")?.path,
+			"Projects/client-a.md",
+		);
+	});
+
+	it("does not let a repo_path for another repository win", () => {
+		const candidates = [note("Notes/api.md", false, null, "/home/me/projects/client-b/api")];
+		assert.equal(
+			resolveProjectNote("api", candidates, "/home/me/projects/client-a/api")?.path,
+			"Notes/api.md",
+		);
+	});
+
+	it("prefers repo_path over a tracked name that cannot tell two repos apart", () => {
+		const candidates = [
+			note("Notes/api.md", true, "api"),
+			note("Projects/client-a.md", false, null, "/home/me/projects/client-a/api"),
+		];
+		assert.equal(
+			resolveProjectNote("api", candidates, "/home/me/projects/client-a/api")?.path,
+			"Projects/client-a.md",
+		);
+	});
+
+	it("ignores a relative repo_path, which names no repository", () => {
+		// Old notes can carry `repo_path: projects/api`, which is relative to a machine nobody
+		// recorded. Treating it as a key would bind a note to whatever the cwd happens to be.
+		const candidates = [note("Notes/other.md", false, null, "projects/api")];
+		assert.equal(resolveProjectNote("api", candidates, "/home/me/projects/api"), null);
 	});
 
 	it("does not match a note whose sanitised name merely looks similar", () => {

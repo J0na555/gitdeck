@@ -16,6 +16,7 @@
  *
  * No `obsidian` import, so `node --test` loads this directly.
  */
+import { isProjectKey, projectKey } from "./identity.ts";
 import { sanitizeBase } from "./summary.ts";
 
 /** One markdown note in the vault, as far as note matching cares. */
@@ -34,6 +35,13 @@ export interface NoteCandidate {
 	 * form that survives renaming the note.
 	 */
 	tracks: string | null;
+	/**
+	 * Absolute repository path recorded in the note's frontmatter, when it carries one.
+	 *
+	 * This is the only key that tells two repos with the same basename apart. A note written by
+	 * an older Gitdeck already has `repo_path` in it; a hand-written note can add one.
+	 */
+	repoPath: string | null;
 }
 
 /**
@@ -55,9 +63,23 @@ export interface NoteCandidate {
 export function resolveProjectNote(
 	projectName: string,
 	candidates: readonly NoteCandidate[],
+	projectPath: string | null = null,
 ): NoteCandidate | null {
 	const wanted = comparableName(projectName);
 	if (wanted === "") return null;
+
+	// Strongest evidence first. A `tracked: api` note cannot say which of two `api` repos it
+	// means, while `repo_path` names exactly one.
+	const key = projectPath !== null && isProjectKey(projectPath) ? projectKey(projectPath) : null;
+	if (key !== null) {
+		const bound = candidates.filter(
+			(candidate) =>
+				candidate.repoPath !== null &&
+				isProjectKey(candidate.repoPath) &&
+				projectKey(candidate.repoPath) === key,
+		);
+		if (bound.length > 0) return [...bound].sort(compareCandidates)[0];
+	}
 
 	const claimed = candidates.filter((candidate) => candidate.tracks !== null && comparableName(candidate.tracks) === wanted);
 	if (claimed.length > 0) return [...claimed].sort(compareCandidates)[0];

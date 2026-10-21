@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { isProjectKey, projectKey, repoMarkerKey } from "./identity.ts";
+import { duplicateNameQualifiers, isProjectKey, projectKey, repoMarkerKey } from "./identity.ts";
 
 describe("projectKey", () => {
 	it("resolves a trailing slash, a dot and a parent segment to one key", () => {
@@ -46,5 +46,32 @@ describe("isProjectKey", () => {
 		assert.equal(isProjectKey("/home/x/api"), true);
 		assert.equal(isProjectKey("api"), false);
 		assert.equal(isProjectKey("projects/api"), false);
+	});
+});
+
+describe("duplicateNameQualifiers", () => {
+	it("qualifies only the names that are shared", () => {
+		const qualifiers = duplicateNameQualifiers([
+			{ name: "api", path: "/home/me/projects/client-a/api", root: "/home/me/projects" },
+			{ name: "api", path: "/home/me/projects/client-b/api", root: "/home/me/projects" },
+			{ name: "web", path: "/home/me/projects/web", root: "/home/me/projects" },
+		]);
+
+		assert.equal(qualifiers.size, 2);
+		assert.equal(qualifiers.get(projectKey("/home/me/projects/client-a/api")), "client-a");
+		assert.equal(qualifiers.get(projectKey("/home/me/projects/client-b/api")), "client-b");
+		assert.equal(qualifiers.has(projectKey("/home/me/projects/web")), false);
+	});
+
+	it("falls back to the parent basename when the repo is not under the scan root", () => {
+		// A hand-edited scan root can leave a project outside it. The row still needs words that
+		// differ from the other same-named row.
+		const qualifiers = duplicateNameQualifiers([
+			{ name: "api", path: "/elsewhere/client-a/api", root: "/home/me/projects" },
+			{ name: "api", path: "/elsewhere/client-b/api", root: "/home/me/projects" },
+		]);
+
+		assert.equal(qualifiers.get(projectKey("/elsewhere/client-a/api")), "client-a");
+		assert.equal(qualifiers.get(projectKey("/elsewhere/client-b/api")), "client-b");
 	});
 });

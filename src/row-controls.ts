@@ -27,6 +27,8 @@ export interface ProjectRowOptions {
 	selected: boolean;
 	/** The query matched only by scattering characters, so dim rather than hide it. */
 	weak: boolean;
+	/** Parent folder shown after the name when two visible projects share a basename. */
+	qualifier?: string;
 	/** Draw the "why this score" line under the name. */
 	explainScores: boolean;
 	/** Wording for the editor control, which depends on the configured command. */
@@ -75,6 +77,14 @@ export function createProjectRow(doc: Document, options: ProjectRowOptions): HTM
 	const name = doc.createElement("div");
 	name.className = "gd-name";
 	name.textContent = project.facts.name;
+	if (options.qualifier) {
+		// Two `api` rows are different repositories. The qualifier is the shortest thing that
+		// says which one this is without turning the name into an absolute path.
+		const parent = doc.createElement("span");
+		parent.className = "gd-name-parent";
+		parent.textContent = ` · ${options.qualifier}`;
+		name.appendChild(parent);
+	}
 	// The mouse equivalent of moving the cursor here and pressing Enter, and it has to select
 	// as well as open. Otherwise the panel carries two ideas of the current row: the
 	// highlighted one, which `j`, `Enter`, `s` and `p` all act on, and the one the user last

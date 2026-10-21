@@ -75,15 +75,18 @@ export function readNoteCandidates(app: App, settings: PluginSettings): NoteCand
 		// whatever it is called. A string is therefore never read as a flag: `tracked: "yes"` in a
 		// note somebody wrote is a claim about a project called "yes".
 		const frontmatter = app.metadataCache.getFileCache(file)?.frontmatter as
-			| { tracked?: unknown }
+			| { tracked?: unknown; repo_path?: unknown }
 			| undefined;
 		const raw = frontmatter?.tracked;
 		const tracks = typeof raw === "string" && raw.trim() !== "" ? raw.trim() : null;
+		const recordedPath = frontmatter?.repo_path;
 		candidates.push({
 			path: file.path,
 			basename: file.basename,
 			tracked: raw === true,
 			tracks: tracks === "true" ? null : tracks,
+			repoPath:
+				typeof recordedPath === "string" && recordedPath.trim() !== "" ? recordedPath.trim() : null,
 		});
 	}
 	return candidates;

@@ -709,7 +709,7 @@ export default class GitdeckPlugin extends Plugin {
 		// links to, and nothing else. The dashboard is excluded from the candidates by the reader.
 		const candidates = readNoteCandidates(this.app, this.settings);
 		for (const project of this.projects) {
-			const note = resolveProjectNote(project.facts.name, candidates);
+			const note = resolveProjectNote(project.facts.name, candidates, project.facts.path);
 			if (note) project.notePath = note.path;
 		}
 

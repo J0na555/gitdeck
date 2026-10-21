@@ -172,6 +172,15 @@
 	color: var(--text-accent);
 }
 
+/*
+ * The parent folder after a duplicated project name. Only two `api` repos need it, and
+ * then it is the difference between opening the right note and the wrong one.
+ */
+.gd-name-parent {
+	color: var(--text-faint);
+	font-weight: 400;
+}
+
 .gd-meta {
 	display: flex;
 	gap: 8px;
