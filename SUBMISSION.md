@@ -275,9 +275,9 @@ Ordered by risk.
 
 - [ ] `src/vault.ts`: dashboard writes, weekly writes, folder creation, marker preservation, legacy note reads, summary state. Highest risk because this writes user files.
 - [ ] `src/main.ts`: extract and test settings load, migration, and pure scan orchestration.
-- [ ] `src/format.ts`: pipe escaping, newlines, CRLF, missing dates, invalid dates, wikilink escaping.
-- [ ] `src/summary.ts`: null HEAD, dirty-count changes, special characters, stale detection.
-- [ ] `src/context.ts`: the `git mv` rename case.
+- [x] `src/format.ts`: pipe escaping, newlines, CRLF, missing dates, invalid dates, wikilink escaping. Covered by `src/format.test.ts`.
+- [x] `src/summary.ts`: null HEAD, dirty-count changes, special characters, stale detection. Covered by `src/summary.test.ts`.
+- [x] `src/context.ts`: the `git mv` rename case. Covered by `src/context.test.ts`.
 - [x] `src/obsidian-compat.ts`: path normalisation. Covered by `src/obsidian-compat.test.ts`.
 - [ ] `src/note-open.ts`: missing file, null project, missing summary target, mock `Notice` and workspace.
 
