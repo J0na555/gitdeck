@@ -67,6 +67,7 @@ import {
 	syncWeekly,
 	updateDashboard,
 } from "./vault";
+import type { WeeklySyncResult } from "./vault";
 import { weekStartKey, weeklyFolder } from "./week";
 import { WriteChain } from "./write-chain";
 import { renderWeightSettings } from "./weight-settings";
@@ -182,6 +183,9 @@ export default class GitdeckPlugin extends Plugin {
 
 	/** True once the one ambiguous/unmapped migration notice has been shown. */
 	private keyMigrationWarned = false;
+
+	/** Weekly paths already reported as foreign, so a second refresh does not repeat the notice. */
+	private readonly foreignWeeklyReported = new Set<string>();
 
 	/**
 	 * Register everything the plugin adds to the workspace.
@@ -449,6 +453,27 @@ export default class GitdeckPlugin extends Plugin {
 	}
 
 	/**
+	 * Tell the user when the weekly writer left a file alone.
+	 *
+	 * A file already at the weekly path with no weekly section is the core weekly-notes case:
+	 * the plugin cannot append machine tables into somebody's journal, and returning silently
+	 * would look like the toggle did nothing. One notice per path per session, because refresh
+	 * runs more than once and the same refusal is not news the second time.
+	 */
+	private reportWeeklyOutcome(result: WeeklySyncResult): void {
+		if (result.outcome.status !== "refused") return;
+		if (result.outcome.reason !== "foreign" && result.outcome.reason !== "broken") return;
+		if (this.foreignWeeklyReported.has(result.path)) return;
+		this.foreignWeeklyReported.add(result.path);
+
+		const message =
+			result.outcome.reason === "broken"
+				? `Gitdeck: left ${result.path} alone. Its Gitdeck section has a start marker with no end marker, and repairing that could delete your text. Fix the markers or move the file.`
+				: `Gitdeck: left ${result.path} alone. A file with that name already exists and was not written by Gitdeck, so nothing was appended to it. Move or rename it if you want the weekly note written here.`;
+		new Notice(message, 0);
+	}
+
+	/**
 	 * Probe all three CLIs and cache the result. Concurrent and non-blocking: sequential
 	 * blocking probes froze the main thread for 37-43s measured, while concurrently the
 	 * total is the slowest single probe. `announce` distinguishes the two callers, because
@@ -711,9 +736,10 @@ export default class GitdeckPlugin extends Plugin {
 					countCommitsSince(project.facts.path, weekStartKey(now)),
 				);
 			}
-			await this.weeklyWrites.run(() =>
+			const weekly = await this.weeklyWrites.run(() =>
 				syncWeekly(this.app, this.settings, this.projects, commitsThisWeek, now),
 			);
+			this.reportWeeklyOutcome(weekly);
 		}
 
 		// After the dashboard exists, because that is where the text lands. Before the settings

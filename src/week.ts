@@ -9,6 +9,7 @@
  * The vault side is in `vault.ts`: read the file, hand it here, write back what comes out.
  */
 import { cell, linkCell, relativeAge } from "./format.ts";
+import { SECTION_MARKERS, sectionBody } from "./markers.ts";
 import { normalizePath } from "./obsidian-compat.ts";
 import { rankProjects } from "./rank.ts";
 import type { PluginSettings, Project } from "./types.ts";
@@ -190,6 +191,22 @@ export function renderWeeklySection(
 		lines.push(`| ${row.join(" | ")} |`);
 	}
 	return lines.join("\n");
+}
+
+/**
+ * What is already at the weekly path, as far as the writer may act on it.
+ *
+ * `ours` means the section is intact and may be regenerated. `foreign` means a file exists
+ * without a weekly section, which is the core weekly-notes case: leave it alone and say so.
+ * `broken` means the start marker is there but its end marker is not, so repairing the span
+ * could delete text between the marker and wherever the end marker used to be.
+ */
+export type WeeklySectionState = "ours" | "foreign" | "broken";
+
+export function weeklySectionState(doc: string): WeeklySectionState {
+	if (sectionBody(doc, "weekly") !== null) return "ours";
+	const start = SECTION_MARKERS.weekly.start;
+	return doc.split("\n").some((line) => line.trim() === start) ? "broken" : "foreign";
 }
 
 /**

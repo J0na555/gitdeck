@@ -11,6 +11,7 @@ import {
 	WEEKLY_SUBFOLDER,
 	weeklyFolder,
 	weeklyPath,
+	weeklySectionState,
 } from "./week.ts";
 import type { PluginSettings, Project, RepoFacts } from "./types.ts";
 
@@ -178,6 +179,26 @@ describe("weeklyFolder and weeklyPath", () => {
 	it("names the file after the ISO week", () => {
 		assert.equal(weeklyPath(settings("Gitdeck"), NOW), "Gitdeck/Weekly/2026-W42.md");
 		assert.equal(weeklyPath(settings(""), NOW), "Weekly/2026-W42.md");
+	});
+});
+
+describe("weeklySectionState", () => {
+	it("recognises its own section", () => {
+		const doc = replaceSection("", "weekly", "generated table");
+		assert.equal(weeklySectionState(doc), "ours");
+	});
+
+	it("calls a file with no weekly section foreign", () => {
+		// The core weekly-notes case: somebody's journal already has this week's filename.
+		assert.equal(weeklySectionState("# My week\n\nWrote some code."), "foreign");
+		assert.equal(weeklySectionState(""), "foreign");
+	});
+
+	it("calls an unpaired start marker broken rather than foreign", () => {
+		// Repairing this could delete the user's prose, so the notice has to say something
+		// different from "this file is not ours".
+		const doc = "Someone's words\n<!-- pt:weekly:start -->\nmore words";
+		assert.equal(weeklySectionState(doc), "broken");
 	});
 });
 

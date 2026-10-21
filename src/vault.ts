@@ -3,12 +3,12 @@ import { spawnSync } from "child_process";
 import type { AtomicOptions, AtomicOutcome, AtomicTarget } from "./atomic-write";
 import { atomicUpdate } from "./atomic-write";
 import { assertSafeTarget, dashboardPath, renderDashboard } from "./dashboard";
-import { replaceSection, sectionBody } from "./markers";
+import { replaceSection } from "./markers";
 import type { NoteCandidate } from "./note-link";
 import type { LegacyNoteState, LegacySummaryFrontmatter } from "./machine-state";
 import { legacyNoteStateFromFrontmatter } from "./legacy-notes";
 import { PluginSettings, Project, ProjectFrontmatter } from "./types";
-import { assertSafeWeeklyTarget, isWeeklyNotePath, renderWeeklySection, weeklyFolder, weeklyPath } from "./week";
+import { assertSafeWeeklyTarget, isWeeklyNotePath, renderWeeklySection, weeklyFolder, weeklyPath, weeklySectionState } from "./week";
 
 /** Create `folder` and any missing parents. No-op when it already exists. */
 export async function ensureFolder(app: App, folder: string): Promise<void> {
@@ -200,13 +200,20 @@ export async function syncDashboard(
  * A refused write or an unreadable vault returns null rather than throwing. The panel already
  * has everything it shows; this file is a view of the same data.
  */
+export interface WeeklySyncResult {
+	/** The path the writer aimed at, whether or not a write happened. */
+	path: string;
+	/** The atomic outcome, so the caller can tell a foreign file from a failed write. */
+	outcome: AtomicOutcome;
+}
+
 export async function syncWeekly(
 	app: App,
 	settings: PluginSettings,
 	projects: readonly Project[],
 	commitsThisWeek: ReadonlyMap<string, number>,
 	now: number = Date.now(),
-): Promise<string | null> {
+): Promise<WeeklySyncResult> {
 	const target = weeklyPath(settings, now);
 	assertSafeWeeklyTarget(settings, target, now);
 	await ensureFolder(app, weeklyFolder(settings));
@@ -221,10 +228,13 @@ export async function syncWeekly(
 		(doc) => replaceSection(doc, "weekly", renderWeeklySection(projects, commitsThisWeek, now)),
 		{
 			missing: "create",
-			guard: (doc) => (sectionBody(doc, "weekly") === null ? "foreign" : null),
+			guard: (doc) => {
+				const state = weeklySectionState(doc);
+				return state === "ours" ? null : state;
+			},
 		},
 	);
-	return outcome.status === "written" || outcome.status === "unchanged" ? target : null;
+	return { path: target, outcome };
 }
 
 /**
