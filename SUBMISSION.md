@@ -260,14 +260,14 @@ The pure tests cover the interleaving: concurrent edits outside a section, a no-
 
 **Risk:** 46 repos took about 3.1 seconds in a real measurement, with roughly nine `spawnSync` git calls per repo on the main thread. `onOpen` awaits the scan, so a restored Gitdeck pane blocks Obsidian at startup. The spinner does not paint before the block.
 
-- [ ] Yield one macrotask before `scanProjects` so the panel paints.
-- [ ] Re-measure on a clean machine with a fixed repo count.
-- [ ] Resolve the contradiction with `FEATURE-PLAN.md`, which claims 0.17 seconds for a 45-repo scan.
-- [ ] Decide whether the async scan ships in `1.0.0` or is disclosed as a known limitation.
-- [ ] If deferred, add a known-limitations section to the README and release notes.
-- [ ] Recommended: make the scan async before `1.0.0`. It removes the startup freeze instead of documenting it.
+- [x] Yield one macrotask before `scanProjects` so the panel paints. `scanProjects` awaits a macrotask before walking the root; the view's pre-scan render now reaches the screen.
+- [ ] Re-measure on a clean machine with a fixed repo count. On this machine, 46 repos: the old synchronous scan took 1.95-2.03s with zero timer ticks; the async scan takes 1.49-1.74s with about 98 ticks. A clean-machine run is still pending.
+- [x] Resolve the contradiction with `FEATURE-PLAN.md`, which claims 0.17 seconds for a 45-repo scan. Corrected: the 0.17s figure was stale. A 46-repo scan is about 2s synchronously on this machine.
+- [x] Decide whether the async scan ships in `1.0.0` or is disclosed as a known limitation. It ships in `1.0.0`.
+- [x] If deferred, add a known-limitations section to the README and release notes. Not deferred.
+- [x] Recommended: make the scan async before `1.0.0`. It removes the startup freeze instead of documenting it. `git`, weekly counts, and summary head reads now use `execFile`.
 
-**Files:** `src/git.ts`, `src/main.ts`, `src/view.ts`.
+**Files:** `src/git.ts`, `src/main.ts`, `src/vault.ts`, `src/machine-state.ts`.
 
 ## 20. Add tests for untested modules
 
