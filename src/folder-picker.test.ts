@@ -1,6 +1,10 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { folderChoices } from "./folder-picker.ts";
+import { folderChoices as folderChoicesImpl } from "./folder-picker.ts";
+import { normalizePath } from "./obsidian-compat.ts";
+
+const folderChoices = (current: string, folders: readonly string[]) =>
+	folderChoicesImpl(current, folders, normalizePath);
 
 describe("folderChoices", () => {
 	it("lists the folders that exist, alphabetically", () => {

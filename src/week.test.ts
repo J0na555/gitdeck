@@ -2,20 +2,30 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { replaceSection, sectionBody } from "./markers.ts";
 import {
-	assertSafeWeeklyTarget,
+	assertSafeWeeklyTarget as assertSafeWeeklyTargetImpl,
 	isoWeekKey,
-	isWeeklyNotePath,
+	isWeeklyNotePath as isWeeklyNotePathImpl,
 	renderWeeklySection,
 	weekEndKey,
 	weekStartKey,
 	WEEKLY_SUBFOLDER,
-	weeklyFolder,
-	weeklyPath,
+	weeklyFolder as weeklyFolderImpl,
+	weeklyPath as weeklyPathImpl,
 	weeklySectionState,
 } from "./week.ts";
+import { normalizePath } from "./obsidian-compat.ts";
 import type { PluginSettings, Project, RepoFacts } from "./types.ts";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
+
+// Production injects Obsidian's normalizer; tests use the copy that runs under node --test.
+const weeklyFolder = (settings: PluginSettings): string => weeklyFolderImpl(settings, normalizePath);
+const weeklyPath = (settings: PluginSettings, now: number): string =>
+	weeklyPathImpl(settings, now, normalizePath);
+const isWeeklyNotePath = (settings: PluginSettings, path: string): boolean =>
+	isWeeklyNotePathImpl(settings, path, normalizePath);
+const assertSafeWeeklyTarget = (settings: PluginSettings, target: string, now: number): void =>
+	assertSafeWeeklyTargetImpl(settings, target, now, normalizePath);
 
 /** Local noon on a day, so the test does not depend on the machine's timezone offset. */
 function at(year: number, month: number, day: number): number {

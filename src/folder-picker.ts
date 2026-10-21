@@ -8,7 +8,8 @@
  *
  * No `obsidian` import, so `node --test` loads this directly.
  */
-import { normalizePath } from "./obsidian-compat.ts";
+import { normalizeFolder } from "./normalize.ts";
+import type { NormalizePath } from "./normalize.ts";
 
 /** One row of the dropdown. `value` is what gets saved. */
 export interface FolderChoice {
@@ -26,16 +27,22 @@ export interface FolderChoice {
  * save of an unrelated setting writes a different folder. It is listed with its real value and
  * labelled as missing, which is also the truth: the next scan creates it.
  */
-export function folderChoices(current: string, folders: readonly string[]): FolderChoice[] {
+export function folderChoices(
+	current: string,
+	folders: readonly string[],
+	normalize: NormalizePath,
+): FolderChoice[] {
 	const root: FolderChoice = { value: "", label: "Vault root" };
 	const values = new Set<string>();
 	for (const folder of folders) {
-		const value = normalizePath(folder);
-		if (value !== "" && value !== ".") values.add(value);
+		const value = normalizeFolder(folder, normalize);
+		if (value !== "") values.add(value);
 	}
 
-	const currentValue = normalizePath(current);
-	const existsAlready = folders.map(normalizePath).includes(currentValue);
+	const currentValue = normalizeFolder(current, normalize);
+	const existsAlready = folders
+		.map((folder) => normalizeFolder(folder, normalize))
+		.includes(currentValue);
 	if (currentValue !== "" && !existsAlready) {
 		values.add(currentValue);
 		return [

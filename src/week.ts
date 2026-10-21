@@ -10,7 +10,8 @@
  */
 import { cell, linkCell, relativeAge } from "./format.ts";
 import { SECTION_MARKERS, sectionBody } from "./markers.ts";
-import { normalizePath } from "./obsidian-compat.ts";
+import { joinVaultPath, normalizeFolder } from "./normalize.ts";
+import type { NormalizePath } from "./normalize.ts";
 import { rankProjects } from "./rank.ts";
 import type { PluginSettings, Project } from "./types.ts";
 
@@ -25,8 +26,8 @@ const DAY_MS = 24 * 60 * 60 * 1000;
  * An empty notes folder means the vault root, so the result is plain `Weekly`: same rule as
  * the dashboard, and no hardcoded folder to fall back to.
  */
-export function weeklyFolder(settings: PluginSettings): string {
-	return normalizePath(`${settings.notesFolder}/${WEEKLY_SUBFOLDER}`);
+export function weeklyFolder(settings: PluginSettings, normalize: NormalizePath): string {
+	return joinVaultPath(normalizeFolder(settings.notesFolder, normalize), WEEKLY_SUBFOLDER);
 }
 
 /**
@@ -35,8 +36,8 @@ export function weeklyFolder(settings: PluginSettings): string {
  * `now` is passed in rather than read here so a caller computes the path, the guard and the
  * render for the same instant.
  */
-export function weeklyPath(settings: PluginSettings, now: number): string {
-	return `${weeklyFolder(settings)}/${isoWeekKey(now)}.md`;
+export function weeklyPath(settings: PluginSettings, now: number, normalize: NormalizePath): string {
+	return joinVaultPath(weeklyFolder(settings, normalize), `${isoWeekKey(now)}.md`);
 }
 
 /**
@@ -61,8 +62,12 @@ const WEEKLY_FILE = /^\d{4}-W(0[1-9]|[1-4]\d|5[0-3])$/;
  * The extension is compared without case so a case-insensitive filesystem cannot present the
  * plugin's own file as a candidate under a different spelling.
  */
-export function isWeeklyNotePath(settings: PluginSettings, path: string): boolean {
-	const folder = weeklyFolder(settings);
+export function isWeeklyNotePath(
+	settings: PluginSettings,
+	path: string,
+	normalize: NormalizePath,
+): boolean {
+	const folder = weeklyFolder(settings, normalize);
 	const prefix = `${folder}/`;
 	if (!path.startsWith(prefix)) return false;
 	const rest = path.slice(prefix.length);
@@ -225,15 +230,20 @@ export function weeklySectionState(doc: string): WeeklySectionState {
  * - Not a markdown file.
  * - Not inside the weekly folder. When the folder is the vault root, everything is inside it.
  */
-export function assertSafeWeeklyTarget(settings: PluginSettings, target: string, now: number): void {
-	const expected = weeklyPath(settings, now);
+export function assertSafeWeeklyTarget(
+	settings: PluginSettings,
+	target: string,
+	now: number,
+	normalize: NormalizePath,
+): void {
+	const expected = weeklyPath(settings, now, normalize);
 	if (target !== expected) {
 		throw new Error(`refusing to write ${target}: the weekly note is ${expected}`);
 	}
 	if (!target.endsWith(".md")) {
 		throw new Error(`refusing to write ${target}: not a markdown file`);
 	}
-	const folder = weeklyFolder(settings);
+	const folder = weeklyFolder(settings, normalize);
 	if (folder !== "" && !target.startsWith(`${folder}/`)) {
 		throw new Error(`refusing to write outside ${folder}: ${target}`);
 	}

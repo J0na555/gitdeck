@@ -1,6 +1,6 @@
 import { homedir } from "os";
 import * as path from "path";
-import { App, Notice, Plugin, PluginSettingTab, Setting } from "obsidian";
+import { App, Notice, Plugin, PluginSettingTab, Setting, normalizePath } from "obsidian";
 import {
 	buildGitContext,
 	buildPrompt,
@@ -318,7 +318,7 @@ export default class GitdeckPlugin extends Plugin {
 	 * summary's.
 	 */
 	summaryTarget(): string {
-		return dashboardPath(this.settings);
+		return dashboardPath(this.settings, normalizePath);
 	}
 
 	/**
@@ -340,7 +340,7 @@ export default class GitdeckPlugin extends Plugin {
 		options: { canAdoptUnmarked?: boolean } = {},
 	): Promise<string | null> {
 		return this.dashboardWrites.run(async () => {
-			const target = dashboardPath(this.settings);
+			const target = dashboardPath(this.settings, normalizePath);
 			// No dashboard yet means refusing rather than creating. The next scan creates one, and
 			// the summary that asked for this is lost rather than reported as saved. Creating one
 			// here would mean rendering a project table for a scan that has not happened.
@@ -437,7 +437,7 @@ export default class GitdeckPlugin extends Plugin {
 
 		if (imported > 0) {
 			new Notice(
-				`Gitdeck: moved ${imported} AI summar${imported === 1 ? "y" : "ies"} into ${dashboardPath(this.settings)}. The old notes are untouched, so delete them when the dashboard looks right.`,
+				`Gitdeck: moved ${imported} AI summar${imported === 1 ? "y" : "ies"} into ${dashboardPath(this.settings, normalizePath)}. The old notes are untouched, so delete them when the dashboard looks right.`,
 				0,
 			);
 		}
@@ -857,7 +857,7 @@ export default class GitdeckPlugin extends Plugin {
 			return this.fail(name, provider, result.error);
 		}
 
-		const target = dashboardPath(this.settings);
+		const target = dashboardPath(this.settings, normalizePath);
 		// The model's text goes into one entry in a section, not over a whole file. The write is
 		// therefore a read, a splice and a write, and the read has to see what is already there:
 		// this dashboard is the only copy of every other project's summary, and a generation for
@@ -1043,7 +1043,7 @@ class GitdeckSettingTab extends PluginSettingTab {
 				"Vault folder holding Dashboard.md, the one note the plugin owns. Anything outside its two marked sections is yours and is never rewritten. Move it under private/ if you publish this vault and would rather it stayed out.",
 			)
 			.addDropdown((dropdown) => {
-				for (const choice of folderChoices(this.plugin.settings.notesFolder, listVaultFolders(this.app))) {
+				for (const choice of folderChoices(this.plugin.settings.notesFolder, listVaultFolders(this.app), normalizePath)) {
 					dropdown.addOption(choice.value, choice.label);
 				}
 				dropdown.setValue(this.plugin.settings.notesFolder).onChange(async (value) => {
@@ -1077,7 +1077,7 @@ class GitdeckSettingTab extends PluginSettingTab {
 		new Setting(containerEl)
 			.setName("Weekly note")
 			.setDesc(
-				`Off by default. Writes one file per ISO week in ${weeklyFolder(this.plugin.settings)}/, regenerated on every scan so it never accumulates stale blocks. Only the part between the markers is machine-owned; everything outside them is yours. Turning this off never deletes files already written.`,
+				`Off by default. Writes one file per ISO week in ${weeklyFolder(this.plugin.settings, normalizePath)}/, regenerated on every scan so it never accumulates stale blocks. Only the part between the markers is machine-owned; everything outside them is yours. Turning this off never deletes files already written.`,
 			)
 			.addToggle((toggle) =>
 				toggle.setValue(this.plugin.settings.weeklyNotes).onChange(async (value) => {

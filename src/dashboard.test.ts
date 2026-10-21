@@ -1,19 +1,25 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import {
-	assertSafeTarget,
+	assertSafeTarget as assertSafeTargetImpl,
 	DASHBOARD_FILE,
-	dashboardPath,
+	dashboardPath as dashboardPathImpl,
 	renderDashboard,
 	renderProjectsSection,
 	renderSummaryEntry,
 	upsertSummaryEntry,
 } from "./dashboard.ts";
 import { sectionBody } from "./markers.ts";
+import { normalizePath } from "./obsidian-compat.ts";
 import type { SummaryEntry } from "./dashboard.ts";
 import type { PluginSettings, Project, RepoFacts, SummaryRecord } from "./types.ts";
 
 const NOW = Date.parse("2026-10-03T12:00:00.000Z");
+
+// Production injects Obsidian's normalizer; tests use the copy that runs under node --test.
+const dashboardPath = (settings: PluginSettings): string => dashboardPathImpl(settings, normalizePath);
+const assertSafeTarget = (settings: PluginSettings, target: string): void =>
+	assertSafeTargetImpl(settings, target, normalizePath);
 
 function settings(notesFolder = "Gitdeck"): PluginSettings {
 	return { notesFolder } as PluginSettings;

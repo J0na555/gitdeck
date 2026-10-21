@@ -8,7 +8,14 @@ import type { NoteCandidate } from "./note-link";
 import type { LegacyNoteState, LegacySummaryFrontmatter } from "./machine-state";
 import { legacyNoteStateFromFrontmatter } from "./legacy-notes";
 import { PluginSettings, Project, ProjectFrontmatter } from "./types";
-import { assertSafeWeeklyTarget, isWeeklyNotePath, renderWeeklySection, weeklyFolder, weeklyPath, weeklySectionState } from "./week";
+import {
+	assertSafeWeeklyTarget,
+	isWeeklyNotePath,
+	renderWeeklySection,
+	weeklyFolder,
+	weeklyPath,
+	weeklySectionState,
+} from "./week";
 
 /** Create `folder` and any missing parents. No-op when it already exists. */
 export async function ensureFolder(app: App, folder: string): Promise<void> {
@@ -65,11 +72,11 @@ export function listVaultFolders(app: App): string[] {
  * why the folder alone cannot be the test.
  */
 export function readNoteCandidates(app: App, settings: PluginSettings): NoteCandidate[] {
-	const dashboard = dashboardPath(settings);
+	const dashboard = dashboardPath(settings, normalizePath);
 	const candidates: NoteCandidate[] = [];
 	for (const file of app.vault.getMarkdownFiles()) {
 		if (file.path === dashboard) continue;
-		if (isWeeklyNotePath(settings, file.path)) continue;
+		if (isWeeklyNotePath(settings, file.path, normalizePath)) continue;
 		// `tracked` has two forms and only one of them is a boolean. `tracked: true` promotes the
 		// note for the project it is named after; `tracked: api-ai` binds it to that project
 		// whatever it is called. A string is therefore never read as a flag: `tracked: "yes"` in a
@@ -133,8 +140,8 @@ export async function updateDashboard(
 	transform: (doc: string) => string,
 	options: AtomicOptions,
 ): Promise<AtomicOutcome> {
-	const target = dashboardPath(settings);
-	assertSafeTarget(settings, target);
+	const target = dashboardPath(settings, normalizePath);
+	assertSafeTarget(settings, target, normalizePath);
 	return atomicUpdate(noteTarget(app, target), transform, options);
 }
 
@@ -159,8 +166,8 @@ export async function syncDashboard(
 	projects: Project[],
 	now: number = Date.now(),
 ): Promise<string | null> {
-	const target = dashboardPath(settings);
-	assertSafeTarget(settings, target);
+	const target = dashboardPath(settings, normalizePath);
+	assertSafeTarget(settings, target, normalizePath);
 	await ensureFolder(app, settings.notesFolder);
 
 	// A generated body carrying a marker would break the section structure the next write
@@ -217,9 +224,9 @@ export async function syncWeekly(
 	commitsThisWeek: ReadonlyMap<string, number>,
 	now: number = Date.now(),
 ): Promise<WeeklySyncResult> {
-	const target = weeklyPath(settings, now);
-	assertSafeWeeklyTarget(settings, target, now);
-	await ensureFolder(app, weeklyFolder(settings));
+	const target = weeklyPath(settings, now, normalizePath);
+	assertSafeWeeklyTarget(settings, target, now, normalizePath);
+	await ensureFolder(app, weeklyFolder(settings, normalizePath));
 
 	// A file already at this path was not made by us. Obsidian's core weekly notes share the
 	// `YYYY-Www.md` name, so a file with no weekly section is left alone rather than having

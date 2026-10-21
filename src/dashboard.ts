@@ -11,9 +11,10 @@
  * Two owned sections, marked by HTML comments, and nothing outside them is ever touched. See
  * `markers.ts` for why that is decided there and how a broken span is handled.
  */
-import { normalizePath } from "./obsidian-compat.ts";
 import { cell, linkCell } from "./format.ts";
 import { repoMarkerKey } from "./identity.ts";
+import { joinVaultPath, normalizeFolder } from "./normalize.ts";
+import type { NormalizePath } from "./normalize.ts";
 import { replaceSection, sectionBody } from "./markers.ts";
 import { rankProjects } from "./rank.ts";
 import type { SummaryBody } from "./summary.ts";
@@ -29,8 +30,8 @@ export const DASHBOARD_FILE = "Dashboard.md";
  * default: this plugin has no opinion about where anyone's notes live, and a user who clears the
  * field gets the root and not somebody else's folder.
  */
-export function dashboardPath(settings: PluginSettings): string {
-	return normalizePath(`${settings.notesFolder}/${DASHBOARD_FILE}`);
+export function dashboardPath(settings: PluginSettings, normalize: NormalizePath): string {
+	return joinVaultPath(normalizeFolder(settings.notesFolder, normalize), DASHBOARD_FILE);
 }
 
 /**
@@ -53,15 +54,19 @@ export function dashboardPath(settings: PluginSettings): string {
  * repository named `Dashboard` resolves to no note at all, because `readNoteCandidates` leaves
  * the dashboard out of the candidates.
  */
-export function assertSafeTarget(settings: PluginSettings, target: string): void {
-	const expected = dashboardPath(settings);
+export function assertSafeTarget(
+	settings: PluginSettings,
+	target: string,
+	normalize: NormalizePath,
+): void {
+	const expected = dashboardPath(settings, normalize);
 	if (target !== expected) {
 		throw new Error(`refusing to write ${target}: the dashboard is ${expected}`);
 	}
 	if (!target.endsWith(".md")) {
 		throw new Error(`refusing to write ${target}: not a markdown file`);
 	}
-	const folder = normalizePath(settings.notesFolder);
+	const folder = normalizeFolder(settings.notesFolder, normalize);
 	if (folder !== "" && !target.startsWith(`${folder}/`)) {
 		throw new Error(`refusing to write outside ${folder}: ${target}`);
 	}
