@@ -1,8 +1,8 @@
 import { App, TFile, TFolder, normalizePath } from "obsidian";
-import { spawnSync } from "child_process";
 import type { AtomicOptions, AtomicOutcome, AtomicTarget } from "./atomic-write";
 import { atomicUpdate } from "./atomic-write";
 import { assertSafeTarget, dashboardPath, renderDashboard } from "./dashboard";
+import { gitProbe } from "./git";
 import { replaceSection } from "./markers";
 import type { NoteCandidate } from "./note-link";
 import type { LegacyNoteState, LegacySummaryFrontmatter } from "./machine-state";
@@ -291,12 +291,7 @@ export function readLegacyNotes(
  * Exported because staleness is now a comparison between data.json and the repo, and this is
  * the other half of it. One `rev-parse` per project, exactly as before.
  */
-export function headSha(repoPath: string): string | null {
-	const res = spawnSync("git", ["rev-parse", "--short", "HEAD"], {
-		cwd: repoPath,
-		encoding: "utf8",
-		windowsHide: true,
-	});
-	if (res.error || res.status !== 0) return null;
-	return res.stdout.trim() || null;
+export async function headSha(repoPath: string): Promise<string | null> {
+	const sha = await gitProbe(repoPath, ["rev-parse", "--short", "HEAD"]);
+	return sha || null;
 }

@@ -271,8 +271,8 @@ export default class GitdeckPlugin extends Plugin {
 
 	override onunload(): void {
 		// No long-lived child processes: a probe is killed at PROBE_TIMEOUT_MS and nothing
-		// else outlives the call that started it. Scans are still spawnSync, and finish
-		// before unload returns.
+		// else outlives the call that started it. An in-flight scan may settle after
+		// unload because its git probes are async, but each child exits with its probe.
 	}
 
 /** Where a failure was recorded, for a notice to name. */
@@ -689,7 +689,7 @@ export default class GitdeckPlugin extends Plugin {
 		const root = this.settings.scanRoot;
 		await this.migrateLegacyState();
 
-		const facts = scanProjects(root);
+		const facts = await scanProjects(root);
 		const now = Date.now();
 		const { pins, previousDirty } = this.settings.state;
 
@@ -733,7 +733,7 @@ export default class GitdeckPlugin extends Plugin {
 			for (const project of this.projects) {
 				commitsThisWeek.set(
 					project.facts.path,
-					countCommitsSince(project.facts.path, weekStartKey(now)),
+					await countCommitsSince(project.facts.path, weekStartKey(now)),
 				);
 			}
 			const weekly = await this.weeklyWrites.run(() =>
@@ -748,10 +748,10 @@ export default class GitdeckPlugin extends Plugin {
 
 		// Read back what summaries already exist. A project with no summary is
 		// the normal case, so nothing is created here: this only looks.
-		const states = readSummaryStates(
+		const states = await readSummaryStates(
 			this.settings,
 			this.projects,
-			(project) => headSha(project.path),
+			async (project) => headSha(project.path),
 		);
 		for (const project of this.projects) {
 			const state = states.get(projectKey(project.facts.path));

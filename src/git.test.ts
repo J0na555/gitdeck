@@ -5,7 +5,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { describe, it } from "node:test";
 import { isoDate, relativeAge } from "./format.ts";
-import { countCommitsSince, parseGithubSlug, readRepoFacts, toWebUrl } from "./git.ts";
+import { countCommitsSince, parseGithubSlug, readRepoFacts, scanProjects, toWebUrl } from "./git.ts";
 
 describe("toWebUrl", () => {
 	it("converts an scp-style ssh remote to a github.com URL", () => {
@@ -154,31 +154,31 @@ function cloneWithOrigin(prefix: string): { repo: string; origin: string } {
 }
 
 describe("readRepoFacts health probes", () => {
-	it("counts a stash", () => {
+	it("counts a stash", async () => {
 		// The one real case on this machine, reproduced for real rather than faked.
 		const dir = repoWithCommit("gd-stash-");
 		fs.writeFileSync(path.join(dir, "work.txt"), "half a feature\n");
 		runGit(dir, ["add", "work.txt"]);
 		runGit(dir, ["stash", "push", "-q", "-m", "half a feature"]);
 
-		assert.equal(readRepoFacts(dir, dir).stashCount, 1);
+		assert.equal((await readRepoFacts(dir, dir)).stashCount, 1);
 	});
 
-	it("reports zero stashes as zero, not as unknown", () => {
+	it("reports zero stashes as zero, not as unknown", async () => {
 		const dir = repoWithCommit("gd-no-stash-");
-		const facts = readRepoFacts(dir, dir);
+		const facts = await readRepoFacts(dir, dir);
 		assert.equal(facts.stashCount, 0);
 		assert.notEqual(facts.stashCount, null);
 	});
 
-	it("counts commits the upstream does not have", () => {
+	it("counts commits the upstream does not have", async () => {
 		const { repo } = cloneWithOrigin("gd-unpushed-");
-		assert.equal(readRepoFacts(repo, repo).unpushedCount, 0);
+		assert.equal((await readRepoFacts(repo, repo)).unpushedCount, 0);
 
 		runGit(repo, ["commit", "-q", "--allow-empty", "-m", "local only"]);
 		runGit(repo, ["commit", "-q", "--allow-empty", "-m", "also local"]);
 
-		const facts = readRepoFacts(repo, repo);
+		const facts = await readRepoFacts(repo, repo);
 		assert.equal(facts.unpushedCount, 2);
 		// And the rest of the facts are still right, so one probe failing to be
 		// interesting did not disturb anything else.
@@ -187,20 +187,20 @@ describe("readRepoFacts health probes", () => {
 		assert.equal(facts.onNonDefaultBranch, false);
 	});
 
-	it("reports no upstream as unknown rather than as unpushed", () => {
+	it("reports no upstream as unknown rather than as unpushed", async () => {
 		// Every repo that was never pushed has no upstream. Calling that "every
 		// commit is unpushed" would fire the badge on all of them.
 		const dir = repoWithCommit("gd-no-upstream-");
 		runGit(dir, ["commit", "-q", "--allow-empty", "-m", "local only"]);
 
-		const facts = readRepoFacts(dir, dir);
+		const facts = await readRepoFacts(dir, dir);
 		assert.equal(facts.unpushedCount, null);
 		assert.equal(facts.stashCount, 0);
 	});
 
-	it("leaves both probes unknown when git cannot read the repo at all", () => {
+	it("leaves both probes unknown when git cannot read the repo at all", async () => {
 		const dir = tmpDir("gd-unreadable-");
-		const facts = readRepoFacts(dir, dir);
+		const facts = await readRepoFacts(dir, dir);
 		assert.equal(facts.gitReadable, false);
 		assert.equal(facts.stashCount, null);
 		assert.equal(facts.unpushedCount, null);
@@ -208,38 +208,38 @@ describe("readRepoFacts health probes", () => {
 });
 
 describe("countCommitsSince", () => {
-	it("counts commits made since a date in the past", () => {
+	it("counts commits made since a date in the past", async () => {
 		const dir = repoWithCommit("gd-since-");
 		runGit(dir, ["commit", "-q", "--allow-empty", "-m", "second"]);
 		runGit(dir, ["commit", "-q", "--allow-empty", "-m", "third"]);
-		assert.equal(countCommitsSince(dir, "2000-01-01"), 3);
+		assert.equal(await countCommitsSince(dir, "2000-01-01"), 3);
 	});
 
-	it("returns zero when nothing was committed in the window", () => {
+	it("returns zero when nothing was committed in the window", async () => {
 		// Two days ahead rather than a far-future year: git silently drops a `--since` date it
 		// considers absurd, which would count every commit and hide a broken filter.
 		const dir = repoWithCommit("gd-since-future-");
 		const ahead = new Date(Date.now() + 2 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
-		assert.equal(countCommitsSince(dir, ahead), 0);
+		assert.equal(await countCommitsSince(dir, ahead), 0);
 	});
 
-	it("returns zero for a repo with no commits", () => {
+	it("returns zero for a repo with no commits", async () => {
 		const dir = tmpDir("gd-since-empty-");
 		assert.equal(spawnSync("git", ["init", "-q", "."], { cwd: dir, encoding: "utf8" }).status, 0);
-		assert.equal(countCommitsSince(dir, "2000-01-01"), 0);
+		assert.equal(await countCommitsSince(dir, "2000-01-01"), 0);
 	});
 
-	it("returns zero rather than throwing for a path that is not a repo", () => {
-		assert.equal(countCommitsSince(tmpDir("gd-since-notrepo-"), "2000-01-01"), 0);
+	it("returns zero rather than throwing for a path that is not a repo", async () => {
+		assert.equal(await countCommitsSince(tmpDir("gd-since-notrepo-"), "2000-01-01"), 0);
 	});
 
-	it("returns zero rather than throwing for a path that does not exist", () => {
-		assert.equal(countCommitsSince(path.join(os.tmpdir(), "gd-no-such-repo-xyz"), "2000-01-01"), 0);
+	it("returns zero rather than throwing for a path that does not exist", async () => {
+		assert.equal(await countCommitsSince(path.join(os.tmpdir(), "gd-no-such-repo-xyz"), "2000-01-01"), 0);
 	});
 });
 
 describe("readRepoFacts on a repo with no commits", () => {
-	it("reports no commit date but still trusts git", () => {
+	it("reports no commit date but still trusts git", async () => {
 		// The load-bearing case for the note writer: a fresh `git init` has no
 		// commit date, and "no commits" has to be distinguishable from "git failed",
 		// otherwise an old date on disk can never be cleared.
@@ -248,7 +248,7 @@ describe("readRepoFacts on a repo with no commits", () => {
 			const init = spawnSync("git", ["init", "-q", dir], { encoding: "utf8" });
 			assert.equal(init.status, 0, `git init failed: ${init.stderr}`);
 
-			const facts = readRepoFacts(dir, dir);
+			const facts = await readRepoFacts(dir, dir);
 			assert.equal(facts.lastCommit, null);
 			assert.equal(isoDate(facts.lastCommit), null);
 			assert.equal(facts.gitReadable, true);
@@ -258,17 +258,41 @@ describe("readRepoFacts on a repo with no commits", () => {
 		}
 	});
 
-	it("reports an unreadable repo as not readable", () => {
+	it("reports an unreadable repo as not readable", async () => {
 		// No .git at all: gitReadable false, so the note writer leaves the note alone
 		// rather than recording zeros for facts it could not read.
 		const dir = fs.mkdtempSync(path.join(os.tmpdir(), "gd-not-a-repo-"));
 		try {
-			const facts = readRepoFacts(dir, dir);
+			const facts = await readRepoFacts(dir, dir);
 			assert.equal(facts.gitReadable, false);
 			assert.equal(facts.remote, null);
 			assert.equal(facts.lastCommit, null);
 		} finally {
 			fs.rmSync(dir, { recursive: true, force: true });
 		}
+	});
+});
+
+describe("scanProjects", () => {
+	it("finds repos under the root and skips hidden directories", async () => {
+		const root = tmpDir("gd-scan-");
+		const direct = path.join(root, "direct");
+		const nested = path.join(root, "group", "nested");
+		const hidden = path.join(root, ".hidden", "repo");
+		for (const dir of [direct, nested, hidden]) {
+			fs.mkdirSync(dir, { recursive: true });
+			runGit(dir, ["init", "-q", "."]);
+		}
+
+		const facts = await scanProjects(root);
+
+		assert.deepEqual(
+			facts.map((entry) => entry.path),
+			[direct, nested].sort((a, b) => a.localeCompare(b)),
+		);
+	});
+
+	it("returns nothing for a scan root that does not exist", async () => {
+		assert.deepEqual(await scanProjects(path.join(os.tmpdir(), "gd-no-such-root-xyz")), []);
 	});
 });

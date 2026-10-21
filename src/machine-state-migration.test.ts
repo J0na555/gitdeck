@@ -208,28 +208,28 @@ describe("readSummaryStates", () => {
 		return { state: state({ summaries }) } as PluginSettings;
 	}
 
-	it("keys two same-named repos by path and keeps their records apart", () => {
+	it("keys two same-named repos by path and keeps their records apart", async () => {
 		const settings = settingsWith({ [KEY]: record("one"), [OTHER_KEY]: record("two") });
-		const states = readSummaryStates(settings, [project(PATH), project(OTHER_PATH)], () => null);
+		const states = await readSummaryStates(settings, [project(PATH), project(OTHER_PATH)], async () => null);
 
 		assert.equal(states.size, 2);
 		assert.equal(states.get(KEY)?.commit, "one");
 		assert.equal(states.get(OTHER_KEY)?.commit, "two");
 	});
 
-	it("does not attach one repo's record to the other repo with the same name", () => {
+	it("does not attach one repo's record to the other repo with the same name", async () => {
 		const settings = settingsWith({ [KEY]: record("one") });
-		const states = readSummaryStates(settings, [project(PATH), project(OTHER_PATH)], () => null);
+		const states = await readSummaryStates(settings, [project(PATH), project(OTHER_PATH)], async () => null);
 
 		assert.equal(states.size, 1);
 		assert.equal(states.has(KEY), true);
 		assert.equal(states.has(OTHER_KEY), false);
 	});
 
-	it("hands each project's own facts to the head lookup", () => {
+	it("hands each project's own facts to the head lookup", async () => {
 		const settings = settingsWith({ [KEY]: record("abc1234"), [OTHER_KEY]: record("def5678") });
 		const seen: string[] = [];
-		readSummaryStates(settings, [project(PATH), project(OTHER_PATH)], (entry) => {
+		await readSummaryStates(settings, [project(PATH), project(OTHER_PATH)], async (entry) => {
 			seen.push(entry.path);
 			return null;
 		});

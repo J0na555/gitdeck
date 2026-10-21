@@ -1,61 +1,76 @@
-import { spawnSync } from "child_process";
+import { execFile } from "child_process";
 import * as fs from "fs";
 import * as path from "path";
+import { promisify } from "util";
 import type { RepoFacts } from "./types";
 
 /** Directories never worth descending into when hunting for repos. */
 const SKIP_DIRS = new Set(["node_modules", "vendor", "dist", "build", "target", "venv", ".venv"]);
 
+const execFileAsync = promisify(execFile);
+
 /**
  * Run a git command in `cwd`. Returns trimmed stdout on success, or null when
  * git fails. Many probes are expected to fail on healthy repos (a repo with no
  * commits makes `git log` exit 128), so failure is normal, not exceptional.
+ *
+ * Async on purpose: a scan of dozens of repos used to run every probe with
+ * `spawnSync`, which froze the renderer until the last child exited. `execFile`
+ * rejects on a non-zero status, which is exactly the null case here.
  */
-function git(cwd: string, args: string[]): string | null {
-	const res = spawnSync("git", args, {
-		cwd,
-		encoding: "utf8",
-		maxBuffer: 10 * 1024 * 1024,
-		windowsHide: true,
-	});
-	if (res.error || res.status !== 0) return null;
-	return res.stdout.trim();
+export async function gitProbe(cwd: string, args: string[]): Promise<string | null> {
+	try {
+		const { stdout } = await execFileAsync("git", args, {
+			cwd,
+			encoding: "utf8",
+			maxBuffer: 10 * 1024 * 1024,
+			windowsHide: true,
+		});
+		return stdout.trim();
+	} catch {
+		return null;
+	}
 }
 
 /** True when `dir` is the root of a git repository (dir or worktree file). */
-function isRepo(dir: string): boolean {
-	return fs.existsSync(path.join(dir, ".git"));
+async function isRepo(dir: string): Promise<boolean> {
+	try {
+		await fs.promises.access(path.join(dir, ".git"));
+		return true;
+	} catch {
+		return false;
+	}
 }
 
 /**
  * Find git repositories under `root`, up to `maxDepth` directory levels below it.
  * Hidden directories are skipped so we never walk into .git internals.
  */
-export function findRepos(root: string, maxDepth = 2): string[] {
+export async function findRepos(root: string, maxDepth = 2): Promise<string[]> {
 	const found: string[] = [];
 
-	const walk = (dir: string, depth: number): void => {
+	const walk = async (dir: string, depth: number): Promise<void> => {
 		let entries: fs.Dirent[];
 		try {
-			entries = fs.readdirSync(dir, { withFileTypes: true });
+			entries = await fs.promises.readdir(dir, { withFileTypes: true });
 		} catch {
 			return;
 		}
 		for (const entry of entries) {
 			if (!entry.isDirectory() || entry.name.startsWith(".")) continue;
 			const child = path.join(dir, entry.name);
-			if (isRepo(child)) {
+			if (await isRepo(child)) {
 				found.push(child);
 				// A repo's own subdirectories are its content, not separate projects.
 				continue;
 			}
 			if (depth >= maxDepth) continue;
 			if (SKIP_DIRS.has(entry.name)) continue;
-			walk(child, depth + 1);
+			await walk(child, depth + 1);
 		}
 	};
 
-	walk(root, 0);
+	await walk(root, 0);
 	return found.sort((a, b) => a.localeCompare(b));
 }
 
@@ -144,11 +159,11 @@ export function toWebUrl(remote: string | null): string | null {
  * third of the local repos here, so fall back to the well-known names before
  * giving up and reporting an unknown default.
  */
-function resolveDefaultBranch(cwd: string): string | null {
-	const head = git(cwd, ["symbolic-ref", "--short", "refs/remotes/origin/HEAD"]);
+async function resolveDefaultBranch(cwd: string): Promise<string | null> {
+	const head = await gitProbe(cwd, ["symbolic-ref", "--short", "refs/remotes/origin/HEAD"]);
 	if (head) return head.replace(/^origin\//, "");
 
-	const refs = git(cwd, ["for-each-ref", "refs/remotes/origin", "--format=%(refname:short)"]);
+	const refs = await gitProbe(cwd, ["for-each-ref", "refs/remotes/origin", "--format=%(refname:short)"]);
 	if (!refs) return null;
 
 	const names = refs
@@ -168,8 +183,8 @@ function resolveDefaultBranch(cwd: string): string | null {
  * Exit 0 with empty output is the healthy answer, so zero and "could not ask" are
  * different results and stay different types here.
  */
-function readStashCount(cwd: string): number | null {
-	const out = git(cwd, ["stash", "list"]);
+async function readStashCount(cwd: string): Promise<number | null> {
+	const out = await gitProbe(cwd, ["stash", "list"]);
 	if (out === null) return null;
 	return out.split("\n").filter((line) => line.length > 0).length;
 }
@@ -183,8 +198,8 @@ function readStashCount(cwd: string): number | null {
  * was never pushed is a normal state, and "every commit here is unpushed" would
  * fire on every local-only repo ever written.
  */
-function readUnpushedCount(cwd: string): number | null {
-	const out = git(cwd, ["rev-list", "--count", "@{u}..HEAD"]);
+async function readUnpushedCount(cwd: string): Promise<number | null> {
+	const out = await gitProbe(cwd, ["rev-list", "--count", "@{u}..HEAD"]);
 	if (out === null) return null;
 	const parsed = Number.parseInt(out.trim(), 10);
 	return Number.isFinite(parsed) ? parsed : null;
@@ -195,32 +210,37 @@ function readUnpushedCount(cwd: string): number | null {
  * Every probe degrades to null rather than throwing, so a single odd repo
  * cannot abort a whole scan.
  */
-export function readRepoFacts(repoPath: string, root: string): RepoFacts {
+export async function readRepoFacts(repoPath: string, root: string): Promise<RepoFacts> {
 	const name = path.basename(repoPath);
-	const remote = git(repoPath, ["remote", "get-url", "origin"]);
-	const branch = git(repoPath, ["branch", "--show-current"]) || null;
-	const defaultBranch = resolveDefaultBranch(repoPath);
 
-	// `rev-parse --git-dir` succeeds for a readable repository whether or not it has
-	// any commits, so a false here means the failure was not "this value is
-	// absent". Every absent probe result below is only trustworthy when this is true.
-	const gitReadable = git(repoPath, ["rev-parse", "--git-dir"]) !== null;
-
-	// `--format=%cI` is committer date in strict ISO 8601, timezone included.
-	const lastCommit = git(repoPath, ["log", "-1", "--format=%cI"]) || null;
-
-	const porcelain = git(repoPath, ["status", "--porcelain"]);
+	// Independent probes run together. A scan walks repos one at a time, so this
+	// caps the number of live git children at the handful one repo needs.
+	const [remote, branchResult, defaultBranch, readable, lastCommit, porcelain] = await Promise.all([
+		gitProbe(repoPath, ["remote", "get-url", "origin"]),
+		gitProbe(repoPath, ["branch", "--show-current"]),
+		resolveDefaultBranch(repoPath),
+		// `rev-parse --git-dir` succeeds for a readable repository whether or not it has
+		// any commits, so a false here means the failure was not "this value is absent".
+		// Every absent probe result below is only trustworthy when this is true.
+		gitProbe(repoPath, ["rev-parse", "--git-dir"]),
+		// `--format=%cI` is committer date in strict ISO 8601, timezone included.
+		gitProbe(repoPath, ["log", "-1", "--format=%cI"]),
+		gitProbe(repoPath, ["status", "--porcelain"]),
+	]);
+	const branch = branchResult || null;
+	const gitReadable = readable !== null;
 	const dirtyCount = porcelain === null ? 0 : porcelain.split("\n").filter((l) => l.length > 0).length;
 
 	// Both health probes are skipped entirely when git could not read the repo.
 	// Running them anyway would cost two spawns to learn nothing, and the null
 	// they return is exactly the value that must not overwrite good data.
-	const stashCount = gitReadable ? readStashCount(repoPath) : null;
-	const unpushedCount = gitReadable ? readUnpushedCount(repoPath) : null;
+	const [stashCount, unpushedCount] = gitReadable
+		? await Promise.all([readStashCount(repoPath), readUnpushedCount(repoPath)])
+		: [null, null];
 
 	let dirMtime = 0;
 	try {
-		dirMtime = fs.statSync(repoPath).mtimeMs;
+		dirMtime = (await fs.promises.stat(repoPath)).mtimeMs;
 	} catch {
 		dirMtime = 0;
 	}
@@ -245,10 +265,34 @@ export function readRepoFacts(repoPath: string, root: string): RepoFacts {
 	};
 }
 
-/** Scan `root` and read facts for every repository found. */
-export function scanProjects(root: string, maxDepth = 2): RepoFacts[] {
+/**
+ * Hand the renderer one macrotask before the first probe starts.
+ *
+ * `window` is absent under `node --test`, where `setImmediate` is the same
+ * "let the current turn finish" primitive. Production never takes that branch.
+ */
+function yieldToPaint(): Promise<void> {
+	return new Promise((resolve) => {
+		if (typeof window === "undefined") setImmediate(resolve);
+		else window.setTimeout(resolve, 0);
+	});
+}
+
+/**
+ * Scan `root` and read facts for every repository found.
+ *
+ * Yields one macrotask before touching the filesystem, so the panel can paint
+ * the scanning state before the first probe starts. Repos are walked in order
+ * to keep the result stable and the number of live children bounded.
+ */
+export async function scanProjects(root: string, maxDepth = 2): Promise<RepoFacts[]> {
+	await yieldToPaint();
 	if (!fs.existsSync(root)) return [];
-	return findRepos(root, maxDepth).map((repo) => readRepoFacts(repo, root));
+
+	const repos = await findRepos(root, maxDepth);
+	const facts: RepoFacts[] = [];
+	for (const repo of repos) facts.push(await readRepoFacts(repo, root));
+	return facts;
 }
 
 /**
@@ -263,8 +307,8 @@ export function scanProjects(root: string, maxDepth = 2): RepoFacts[] {
  * with no commits, a path that is not a repo, and a missing git all land on 0. This never
  * throws: one odd repo in a scan of 45 must not abort the note.
  */
-export function countCommitsSince(repoPath: string, since: string): number {
-	const out = git(repoPath, ["log", `--since=${since}`, "--format=%H"]);
+export async function countCommitsSince(repoPath: string, since: string): Promise<number> {
+	const out = await gitProbe(repoPath, ["log", `--since=${since}`, "--format=%H"]);
 	if (out === null || out === "") return 0;
 	return out.split("\n").filter((line) => line.length > 0).length;
 }

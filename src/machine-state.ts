@@ -278,11 +278,11 @@ export function stateFromRecord(
  * `head` is injected rather than called here so this stays a lookup and a comparison. The git
  * call behind it is one `rev-parse` per project, the same one the old reader made.
  */
-export function readSummaryStates(
+export async function readSummaryStates(
 	settings: PluginSettings,
 	projects: Project[],
-	head: (facts: RepoFacts) => string | null,
-): Map<string, SummaryState> {
+	head: (facts: RepoFacts) => Promise<string | null>,
+): Promise<Map<string, SummaryState>> {
 	const states = new Map<string, SummaryState>();
 	const records = settings.state.summaries;
 
@@ -290,7 +290,7 @@ export function readSummaryStates(
 		const key = projectKey(project.facts.path);
 		const record = records[key];
 		if (!record) continue;
-		states.set(key, stateFromRecord(record, project.facts, head(project.facts)));
+		states.set(key, stateFromRecord(record, project.facts, await head(project.facts)));
 	}
 
 	return states;
