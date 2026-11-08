@@ -236,7 +236,7 @@ does. No vault note contents are sent.
 
 ## Support
 
-Report bugs or ask questions at https://github.com/J0na555/Radar/issues.
+Report bugs or ask questions at https://github.com/J0na555/gitdeck/issues.
 
 ## Build
 

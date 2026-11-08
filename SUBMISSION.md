@@ -3,12 +3,12 @@
 Working document. Not part of the plugin release.
 
 - **Target:** first public release, `1.0.0`
-- **Status:** not ready to submit
-- **Last updated:** 2026-10-19
+- **Status:** code complete; packaging and clean-vault QA remaining
+- **Last updated:** 2026-11-08
 - **Plugin id:** `gitdeck`
 - **Display name:** `Gitdeck`
 - **Platform:** desktop only
-- **Repo:** `https://github.com/J0na555/Radar`
+- **Repo:** `https://github.com/J0na555/gitdeck`
 
 ## How to use this file
 
@@ -19,15 +19,21 @@ Working document. Not part of the plugin release.
 
 ## Current state
 
-- 693 unit tests pass.
+Verified locally on 2026-11-08 unless stated otherwise.
+
+- 747 unit tests pass (`pnpm test`, 139 suites).
 - `pnpm typecheck` passes.
-- `pnpm build` reproduces `main.js` byte for byte.
+- `pnpm lint` reports 0 errors and 8 warnings. The warnings are official Obsidian rules: four sentence-case false positives, three deprecated `display()` calls, and the missing declarative settings API for Obsidian 1.13.
+- `pnpm build` reproduces `main.js` byte for byte (`9cc57f09...` across two runs).
+- `pnpm install --frozen-lockfile` passes with pnpm 12.4.1.
 - `LICENSE` is MIT.
+- CI (`.github/workflows/ci.yml`) runs install, typecheck, test, lint, and production build on pushes to `master` and on pull requests. Written but not yet exercised on GitHub.
+- Release workflow (`.github/workflows/release.yml`) triggers on semver tags, reuses the CI workflow, checks the tag against `manifest.json`, attests provenance, and uploads `main.js`, `manifest.json`, and `styles.css` as separate assets. Written but not yet exercised on GitHub.
 - No git tags and no GitHub releases.
-- No CI workflow.
-- `manifest.json`, `package.json`, and `versions.json` are at `0.1.0`.
-- `test_space.ts` and `idea.md` are tracked scratch files.
-- The repo is named `Radar` while the plugin is named `Gitdeck`.
+- `manifest.json` and `package.json` are at `1.0.0`. `versions.json` maps `1.0.0` to `1.7.2`.
+- `test_space.ts` and `idea.md` are removed. `FEATURE-PLAN.md` is gitignored.
+- Repo renamed to `J0na555/gitdeck` on 2026-11-08. The local remote and README issue link point at the new name.
+- Installed-build smoke test: the current build replaced the Oct 19 build in the user's vault. Scan, dashboard note, weekly note, and pin all survived the reload. State migrated from basename keys to absolute-path keys; one stale `previousDirty` key (`api`) remains for a repo no longer under the scan root.
 - The submission process changed in May 2026. There is no pull request to `obsidianmd/obsidian-releases` any more. Submit through `https://community.obsidian.md`.
 
 ---
@@ -173,25 +179,25 @@ The pure tests cover the interleaving: concurrent edits outside a section, a no-
 
 ## 11. Rename the GitHub repository before tagging
 
-- [ ] Rename `J0na555/Radar` to `J0na555/gitdeck`.
-- [ ] Confirm the old URL redirects.
-- [ ] Update the remote URL locally.
-- [ ] Update any README, manifest, or issue links that point at the old name.
-- [ ] Do this before creating the first tag and release.
+- [x] Rename `J0na555/Radar` to `J0na555/gitdeck`. Done by the user on 2026-11-08.
+- [ ] Confirm the old URL redirects. `curl` could not reach GitHub from here (504), so this is unverified. GitHub normally redirects a renamed repo.
+- [x] Update the remote URL locally. `origin` is `git@github.com:J0na555/gitdeck.git`; `git ls-remote origin` returns `master`.
+- [x] Update any README, manifest, or issue links that point at the old name. `README.md` issues link updated. `manifest.json` points at the profile, not the repo.
+- [ ] Do this before creating the first tag and release. Rename is done; the tag is still pending.
 
 **Acceptance:** the public repo name matches the plugin name before the first release.
 
 ## 12. Add CI and run the official lint
 
-- [ ] Add the official `obsidianmd/eslint-plugin` and a lint script.
-- [x] Run it on the repo. Fix every error. Review every warning. 0 errors after the fixes in this pass. Remaining warnings map to P1 #15 (bare timers), #16 (native DOM), and four sentence-case false positives (git, CLI, Dashboard.md).
-- [ ] Add a CI workflow on push and pull request.
-- [ ] CI must run typecheck, tests, lint, and production build.
+- [x] Add the official `obsidianmd/eslint-plugin` and a lint script. `eslint-plugin-obsidianmd` is a dev dependency and `pnpm lint` runs `eslint .`.
+- [x] Run it on the repo. Fix every error. Review every warning. 0 errors after the fixes in this pass. Remaining warnings map to P1 #15 (bare timers), #16 (native DOM), and four sentence-case false positives (git, CLI, Dashboard.md). Re-run on 2026-11-08: 0 errors, 8 warnings.
+- [x] Add a CI workflow on push and pull request. `.github/workflows/ci.yml`, on `master` and pull requests. First GitHub run is pending the next push.
+- [x] CI must run typecheck, tests, lint, and production build. All four steps are in the workflow.
 - [x] Pin the Node version used by CI. The TypeScript tests need a recent Node with type stripping. `.nvmrc` `26.12.0`, used by both workflows.
-- [x] Run `pnpm install --frozen-lockfile`. Verified locally; both workflows use it.
-- [ ] Add a release workflow that depends on the CI gate.
-- [ ] The release workflow must build and upload `main.js`, `manifest.json`, and `styles.css` as separate assets.
-- [ ] Enable artifact attestation if available.
+- [x] Run `pnpm install --frozen-lockfile`. Verified locally on 2026-11-08 with pnpm 12.4.1; both workflows use it.
+- [x] Add a release workflow that depends on the CI gate. `.github/workflows/release.yml` calls the CI workflow as a reusable job. First tag run is pending.
+- [x] The release workflow must build and upload `main.js`, `manifest.json`, and `styles.css` as separate assets. `gh release create` lists all three.
+- [x] Enable artifact attestation if available. `actions/attest-build-provenance@v2` covers all three assets. Not yet exercised.
 
 **Acceptance:** a tag cannot produce a release unless tests, typecheck, lint, and build pass.
 
@@ -329,14 +335,14 @@ Do not test features one by one in UI order. Test by risk, in layers.
 
 ## Layer 0: automated gate
 
-- [ ] `pnpm install --frozen-lockfile`
-- [ ] `pnpm typecheck`
-- [ ] `pnpm test`
-- [ ] `pnpm build`
-- [ ] official Obsidian ESLint plugin, no errors
-- [ ] confirm the build output is byte-for-byte reproducible
-- [ ] confirm the release workflow is gated on all of the above
-- [ ] confirm CI uses a pinned Node version that discovers `*.test.ts`
+- [x] `pnpm install --frozen-lockfile`
+- [x] `pnpm typecheck`
+- [x] `pnpm test`
+- [x] `pnpm build`
+- [x] official Obsidian ESLint plugin, no errors (8 warnings)
+- [x] confirm the build output is byte-for-byte reproducible
+- [ ] confirm the release workflow is gated on all of the above. Configured: `release.yml` calls `ci.yml` and depends on it. A live tag run is still pending.
+- [x] confirm CI uses a pinned Node version that discovers `*.test.ts` (`node-version-file: .nvmrc`, Node 26.12.0)
 
 ## Layer 1: clean-vault smoke test
 
@@ -417,6 +423,7 @@ Copy this table into the release PR or a pinned issue and fill it in.
 | Install | Fresh vault, release assets | Linux |  |  |
 | Install | Fresh vault, release assets | Windows |  |  |
 | Install | Upgrade from old `project-tracker` folder | Linux |  |  |
+| Install | Upgrade existing vault to current build | Linux | pass | 2026-11-08. Panel, dashboard note, weekly note, and pin survived reload. State migrated to path keys. |
 | Scan | Empty scan root | Linux |  |  |
 | Scan | 46 real repos | Linux |  |  |
 | Scan | Port with spaces and non-ASCII | Linux |  |  |
@@ -440,8 +447,8 @@ Copy this table into the release PR or a pinned issue and fill it in.
 
 Run this in order. Do not skip steps.
 
-1. Rename the GitHub repo `Radar` to `gitdeck`.
-2. Update the local remote URL.
+1. Rename the GitHub repo `Radar` to `gitdeck`. Done 2026-11-08.
+2. Update the local remote URL. Done 2026-11-08.
 3. Finish every P0 item above.
 4. Run the full automated gate.
 5. Run the Layer 1 and Layer 2 manual tests and record the results.
@@ -488,11 +495,11 @@ Run this in order. Do not skip steps.
 # Open decisions
 
 - [ ] Did `0.1.0` ever leave this machine? If yes, keep it in `versions.json` and test the upgrade path. If no, treat `1.0.0` as the first release.
-- [ ] Key state by path, or document the duplicate-basename limitation? Recommended: key by path.
-- [ ] Ship the async scan in `1.0.0`, or ship the one-frame yield plus a known-limitations note?
+- [x] Key state by path, or document the duplicate-basename limitation? Path-keyed. Pins, `previousDirty`, and summaries use absolute paths, with a one-time migration from basename keys. Shipped and verified against the installed vault on 2026-11-08.
+- [x] Ship the async scan in `1.0.0`, or ship the one-frame yield plus a known-limitations note? Async scan shipped. `src/git.ts` uses `execFile`, and the installed vault reload completed with the panel working.
 - [ ] Do you have a Windows or macOS machine for a real install test?
-- [ ] Keep the repo name `Radar`, or rename it to `gitdeck`? Recommended: rename before the first tag.
-- [ ] Keep automatic provider probing, or make it user-triggered? Recommended: user-triggered.
+- [x] Keep the repo name `Radar`, or rename it to `gitdeck`? Renamed to `J0na555/gitdeck` on 2026-11-08, before the first tag.
+- [x] Keep automatic provider probing, or make it user-triggered? User-triggered. Probing runs only when the settings tab opens or Retest is pressed.
 
 # Definition of done
 
