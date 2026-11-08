@@ -27,7 +27,7 @@ Verified locally on 2026-11-08 unless stated otherwise.
 - `pnpm build` reproduces `main.js` byte for byte (`9cc57f09...` across two runs).
 - `pnpm install --frozen-lockfile` passes with pnpm 12.4.1.
 - `LICENSE` is MIT.
-- CI (`.github/workflows/ci.yml`) runs install, typecheck, test, lint, and production build on pushes to `master` and on pull requests. Written but not yet exercised on GitHub.
+- CI (`.github/workflows/ci.yml`) runs install, typecheck, test, lint, and production build on pushes to `master` and on pull requests. First live run passed on 2026-11-08 (run 42468140632).
 - Release workflow (`.github/workflows/release.yml`) triggers on semver tags, reuses the CI workflow, checks the tag against `manifest.json`, attests provenance, and uploads `main.js`, `manifest.json`, and `styles.css` as separate assets. Written but not yet exercised on GitHub.
 - No git tags and no GitHub releases.
 - `manifest.json` and `package.json` are at `1.0.0`. `versions.json` maps `1.0.0` to `1.7.2`.
@@ -191,7 +191,7 @@ The pure tests cover the interleaving: concurrent edits outside a section, a no-
 
 - [x] Add the official `obsidianmd/eslint-plugin` and a lint script. `eslint-plugin-obsidianmd` is a dev dependency and `pnpm lint` runs `eslint .`.
 - [x] Run it on the repo. Fix every error. Review every warning. 0 errors after the fixes in this pass. Remaining warnings map to P1 #15 (bare timers), #16 (native DOM), and four sentence-case false positives (git, CLI, Dashboard.md). Re-run on 2026-11-08: 0 errors, 8 warnings.
-- [x] Add a CI workflow on push and pull request. `.github/workflows/ci.yml`, on `master` and pull requests. First GitHub run is pending the next push.
+- [x] Add a CI workflow on push and pull request. `.github/workflows/ci.yml`, on `master` and pull requests. First live run passed on 2026-11-08.
 - [x] CI must run typecheck, tests, lint, and production build. All four steps are in the workflow.
 - [x] Pin the Node version used by CI. The TypeScript tests need a recent Node with type stripping. `.nvmrc` `26.12.0`, used by both workflows.
 - [x] Run `pnpm install --frozen-lockfile`. Verified locally on 2026-11-08 with pnpm 12.4.1; both workflows use it.
